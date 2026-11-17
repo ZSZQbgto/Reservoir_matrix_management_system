@@ -1,0 +1,31 @@
+{
+  "name": "tellux-tianditu-earth",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5173",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 4173",
+    "start": "node server.mjs",
+    "type-check": "tsc --noEmit",
+    "verify": "node scripts/verify.mjs"
+  },
+  "dependencies": {
+    "@takram/three-atmosphere": "0.19.1",
+    "@takram/three-clouds": "0.7.6",
+    "@takram/three-geospatial": "0.9.1",
+    "@takram/three-geospatial-effects": "0.6.4",
+    "3d-tiles-renderer": "^0.4.27",
+    "postprocessing": "6.39.1",
+    "tellux": "0.3.0",
+    "three": "^0.184.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@types/three": "^0.184.1",
+    "playwright-core": "^1.49.0",
+    "typescript": "~5.2.2",
+    "vite": "^5.4.19"
+  }
+}

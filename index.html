@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#05070b" />
+    <meta name="description" content="Tellux 三维地球 · Cesium 图源 · ArcGIS World Imagery" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>Tellux Earth · Cesium 图源</title>
+  </head>
+  <body>
+    <div id="viewer" aria-label="三维地球视口"></div>
+
+    <div class="atmosphere-vignette" aria-hidden="true"></div>
+    <div class="grain" aria-hidden="true"></div>
+
+    <header class="hud hud-top">
+      <a class="brand" href="/" aria-label="Tellux Earth 首页">
+        <span class="brand-orbit" aria-hidden="true">
+          <span></span>
+        </span>
+        <span class="brand-copy">
+          <strong>TELLUX <em>EARTH</em></strong>
+          <small>Cesium 图源 · ArcGIS World Imagery</small>
+        </span>
+      </a>
+
+      <div class="status-strip" role="status" aria-live="polite">
+        <span class="status-pill" id="terrain-status" data-tone="ok">
+          <i></i><b>地形</b><span>本地精细 DEM</span>
+        </span>
+        <span class="status-pill" id="cloud-status">
+          <i></i><b>体积云</b><span>已关闭</span>
+        </span>
+        <span class="status-pill" id="fps-status">
+          <i></i><b>视角</b><span>—</span>
+        </span>
+      </div>
+    </header>
+
+    <aside class="console" id="console" aria-label="场景控制台">
+      <button class="console-toggle" id="console-toggle" type="button" aria-expanded="true" aria-controls="console-body">
+        <span>场景控制</span>
+        <span class="chevron" aria-hidden="true"></span>
+      </button>
+
+      <div class="console-body" id="console-body">
+        <section class="control-section">
+          <div class="section-head">
+            <span>体积云</span>
+            <small>VOLUMETRIC CLOUDS</small>
+          </div>
+
+          <label class="switch-row">
+            <span>云层开关</span>
+            <input type="checkbox" id="clouds-toggle" />
+            <span class="switch" aria-hidden="true"></span>
+          </label>
+
+          <label class="range-row" for="coverage">
+            <span>云量 <output id="coverage-value">30%</output></span>
+            <input id="coverage" type="range" min="0" max="100" value="30" />
+          </label>
+
+          <label class="range-row" for="cloud-altitude">
+            <span>云底高度 <output id="cloud-altitude-value">3400 m</output></span>
+            <input id="cloud-altitude" type="range" min="800" max="12000" step="100" value="3400" />
+          </label>
+
+          <label class="range-row" for="quality">
+            <span>渲染质量 <output id="quality-value">高</output></span>
+            <input id="quality" type="range" min="0" max="3" step="1" value="2" />
+          </label>
+        </section>
+
+        <section class="control-section">
+          <div class="section-head">
+            <span>大气与时间</span>
+            <small>ATMOSPHERE</small>
+          </div>
+
+          <label class="switch-row">
+            <span>大气散射</span>
+            <input type="checkbox" id="atmosphere-toggle" checked />
+            <span class="switch" aria-hidden="true"></span>
+          </label>
+
+          <label class="range-row" for="local-hour">
+            <span>北京时间 <output id="local-hour-value">15:30</output></span>
+            <input id="local-hour" type="range" min="0" max="1439" step="30" value="930" />
+          </label>
+        </section>
+
+        <div class="console-note" id="console-note">
+          <span class="note-dot"></span>
+          <p>正在读取地形源配置…</p>
+        </div>
+      </div>
+    </aside>
+
+    <footer class="hud hud-bottom">
+      <div class="coordinate-readout" aria-live="off">
+        <span class="coord-item"><small>LON</small><b id="coord-lon">—</b></span>
+        <span class="coord-item"><small>LAT</small><b id="coord-lat">—</b></span>
+        <span class="coord-item"><small>ALT</small><b id="coord-alt">—</b></span>
+      </div>
+      <div class="credit-line">
+        <span>TELLUX 0.3</span>
+        <span class="divider"></span>
+        <span>地图数据 © Cesium / ArcGIS</span>
+        <span class="divider"></span>
+        <span>三维引擎 © Tellux / Three.js</span>
+      </div>
+    </footer>
+
+    <div class="loader" id="loader" role="status" aria-live="polite">
+      <div class="loader-orbit" aria-hidden="true">
+        <span></span><span></span><span></span>
+      </div>
+      <div class="loader-copy">
+        <strong>正在构建三维地球</strong>
+        <small id="loader-detail">初始化渲染管线…</small>
+      </div>
+      <div class="loader-track"><span id="loader-bar"></span></div>
+    </div>
+
+    <div class="toast" id="toast" role="status"></div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
