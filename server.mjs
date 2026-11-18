@@ -11,6 +11,7 @@ import https from 'node:https'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { createTileCache } from './scripts/tile-cache.mjs'
 
 const root = path.dirname(fileURLToPath(import.meta.url))
 const distDir = path.join(root, 'dist')
@@ -24,6 +25,9 @@ try {
 
 const port = Number(process.env.PORT || 8090)
 const host = process.env.HOST || '127.0.0.1'
+
+/** 本地地形 / 影像瓦片缓存（.cache/tiles），缺块时回源并写盘。 */
+const localTileCache = createTileCache({ root, token: process.env.CESIUM_ION_TOKEN || '' })
 
 // Public demo credentials from the Tellux docs deployment. Replace with keys
 // issued to your own domain/service for production use.
@@ -158,14 +162,14 @@ function probeSwdx() {
 
 function getAppConfig() {
   return Promise.resolve({
-    terrainMode: 'maptiler',
+    terrainMode: 'local-cache',
+    tileCache: localTileCache.stats(),
     swdxAvailable: false,
     swdxReason: null,
     tiandituToken: 'proxy',
     tiandituReferer,
     maptilerAvailable: Boolean(mapTilerKey),
     maptilerUrl: '/maptiler/tiles/terrain-quantized-mesh-v2/',
-    cesiumIonToken: process.env.CESIUM_ION_TOKEN || '',
     serviceOrigin: ''
   })
 }
@@ -459,7 +463,7 @@ function serveStatic(req, res, pathname) {
   })
 }
 
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
   const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`)
   const pathname = url.pathname
 
@@ -473,6 +477,13 @@ const server = http.createServer((req, res) => {
       .then((config) => json(res, 200, config))
       .catch((error) => json(res, 500, { error: 'config_failed', message: error.message }))
     return
+  }
+
+  // 本地地形 / 影像缓存优先；未命中时回源并写盘。
+  try {
+    if (await localTileCache.handle(req, res, url)) return
+  } catch (error) {
+    console.warn('[tellux-earth] tile cache error:', error.message)
   }
 
   if (pathname.startsWith('/tianditu/')) {
@@ -493,6 +504,18 @@ server.listen(port, host, () => {
   console.log(`[tellux-earth] ${address}`)
   console.log(`[tellux-earth] Tianditu token: ${tiandituToken ? 'configured' : 'missing'}`)
   console.log(`[tellux-earth] MapTiler fallback: ${mapTilerKey ? 'configured' : 'missing'}`)
+  const cacheStats = localTileCache.stats()
+  const cacheTiles = (cacheStats.terrain?.tiles || 0) + (cacheStats.imagery?.tiles || 0)
+  console.log(
+    `[tellux-earth] tile cache: ${localTileCache.cacheDir} (${cacheTiles} tiles${
+      cacheStats.region
+        ? ` · ${cacheStats.region.sizeMeters / 1000} km @ ${cacheStats.region.longitude},${cacheStats.region.latitude}`
+        : ''
+    })`
+  )
+  if (cacheTiles === 0) {
+    console.log('[tellux-earth] local cache empty: run `npm run cache:prefetch` to warm it')
+  }
   probeSwdx().then((probe) => {
     console.log(
       `[tellux-earth] swdx probe: ${probe.available ? 'available' : 'unavailable'}${probe.reason ? ` — ${probe.reason}` : ''}`

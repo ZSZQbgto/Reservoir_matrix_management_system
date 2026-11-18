@@ -9,7 +9,9 @@
     "preview": "vite preview --host 127.0.0.1 --port 4173",
     "start": "node server.mjs",
     "type-check": "tsc --noEmit",
-    "verify": "node scripts/verify.mjs"
+    "verify": "node scripts/verify.mjs",
+    "test": "node tests/water-state.test.mjs",
+    "cache:prefetch": "node scripts/cache-region.mjs"
   },
   "dependencies": {
     "@takram/three-atmosphere": "0.19.1",

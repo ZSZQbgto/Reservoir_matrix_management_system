@@ -1,9 +1,13 @@
 import tellux, { type ImageryLayerOptions, type TerrainOptions } from 'tellux'
+import { WaterEditor } from './water/waterEditor'
 import './style.css'
 
-interface AppConfig {
-  maptilerUrl: string
-  cesiumIonToken: string
+interface TileCacheStats {
+  cacheDir?: string
+  region?: { longitude: number; latitude: number; sizeMeters: number } | null
+  terrain?: { tiles: number; bytes: number }
+  imagery?: { tiles: number; bytes: number }
+  updatedAt?: string | null
 }
 
 const INITIAL_VIEW = {
@@ -19,6 +23,42 @@ const INITIAL_VIEW = {
 const QUALITY_PRESETS = ['low', 'medium', 'high', 'ultra'] as const
 const QUALITY_LABELS = ['低', '中', '高', '极致']
 const DEFAULT_QUALITY_INDEX = 2
+const SHADOW_PRESETS = ['low', 'medium', 'high'] as const
+const SHADOW_LABELS = ['低', '中', '高']
+const CLOUD_PREFS_KEY = 'tellux-cloud-prefs-v1'
+
+interface CloudPrefs {
+  show: boolean
+  coverage: number
+  altitude: number
+  height: number
+  speed: number
+  quality: (typeof QUALITY_PRESETS)[number]
+  lightShafts: boolean
+  detail: boolean
+  turbulence: boolean
+  haze: boolean
+  shadow: (typeof SHADOW_PRESETS)[number]
+}
+
+function readCloudPrefs(): Partial<CloudPrefs> {
+  try {
+    const raw = localStorage.getItem(CLOUD_PREFS_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw) as unknown
+    return parsed && typeof parsed === 'object' ? (parsed as Partial<CloudPrefs>) : {}
+  } catch {
+    return {}
+  }
+}
+
+function writeCloudPrefs(prefs: CloudPrefs): void {
+  try {
+    localStorage.setItem(CLOUD_PREFS_KEY, JSON.stringify(prefs))
+  } catch {
+    // localStorage 不可用时静默降级。
+  }
+}
 
 const $ = <T extends HTMLElement>(selector: string): T => {
   const element = document.querySelector<T>(selector)
@@ -36,11 +76,6 @@ const cloudStatus = $('#cloud-status')
 const consoleElement = $('#console')
 const consoleToggle = $('#console-toggle')
 const consoleNote = $('#console-note')
-
-const fallbackConfig: AppConfig = {
-  maptilerUrl: '/maptiler/tiles/terrain-quantized-mesh-v2/',
-  cesiumIonToken: ''
-}
 
 function setLoader(progress: number, detail: string) {
   loaderDetail.textContent = detail
@@ -73,58 +108,37 @@ function showToast(message: string, duration = 2600) {
   toastTimer = window.setTimeout(() => toast.classList.remove('is-visible'), duration)
 }
 
-function readCesiumToken(): string {
-  const url = new URLSearchParams(window.location.search).get('cesiumToken')
-  return url || localStorage.getItem('cesium-ion-token') || ''
-}
-
-let configCesiumToken = ''
-
-async function loadConfig(): Promise<AppConfig> {
+/** 读取本地缓存统计（dev / 生产服务器都提供 /tile-cache/stats）。 */
+async function fetchTileCacheStats(): Promise<TileCacheStats | null> {
   try {
-    const response = await fetch('/api/config', { cache: 'no-store' })
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    const raw = (await response.json()) as { maptilerUrl?: string; cesiumIonToken?: string }
-    configCesiumToken = raw.cesiumIonToken || ''
-    return {
-      ...fallbackConfig,
-      maptilerUrl: raw.maptilerUrl || fallbackConfig.maptilerUrl,
-      cesiumIonToken: configCesiumToken
-    }
+    const response = await fetch('/tile-cache/stats', { cache: 'no-store' })
+    if (!response.ok) return null
+    return (await response.json()) as TileCacheStats
   } catch {
-    return fallbackConfig
+    return null
   }
 }
 
-// Cesium Ion API is not reachable from this network, so default to the
-// Cesium quantized-mesh terrain proxy + ArcGIS imagery. `?ion=1&cesiumToken=...`
-// can still force Cesium Ion when it is reachable.
-const query = new URLSearchParams(window.location.search)
-const forceIon = query.get('ion') === '1'
-const forceMapTilerTerrain = query.get('terrain') === 'maptiler'
-let cesiumToken = forceIon ? readCesiumToken() : ''
+function describeCache(stats: TileCacheStats | null): string {
+  if (!stats) return '地形与影像优先从本地缓存加载，缺块时自动回源并写盘。'
+  const terrainTiles = stats.terrain?.tiles ?? 0
+  const imageryTiles = stats.imagery?.tiles ?? 0
+  const region = stats.region
+  const size = region ? `${(region.sizeMeters / 1000).toFixed(0)} km` : '50 km'
+  return (
+    `本地缓存 ${region ? `${region.longitude},${region.latitude} ` : ''}${size} 区域：` +
+    `地形 ${terrainTiles} 块 · 影像 ${imageryTiles} 块；缺块自动回源并写盘。`
+  )
+}
 
 function createOverlays(): ImageryLayerOptions[] {
-  if (cesiumToken) {
-    return [
-      {
-        name: 'Cesium World Imagery',
-        source: {
-          type: 'cesium-ion',
-          apiToken: cesiumToken,
-          assetId: 2
-        }
-      }
-    ]
-  }
-
-  // No Cesium Ion token: use Cesium's public ArcGIS World Imagery layer.
+  // 影像优先走本地缓存端点；缺块由本地缓存服务回源 ArcGIS 并写盘。
   return [
     {
-      name: 'Cesium / ArcGIS World Imagery',
+      name: 'Cesium / ArcGIS World Imagery（本地缓存）',
       source: {
         type: 'xyz',
-        url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        url: '/imagery-cache/{z}/{y}/{x}',
         levels: 19,
         projection: 'EPSG:3857',
         tileDimension: 256
@@ -133,22 +147,10 @@ function createOverlays(): ImageryLayerOptions[] {
   ]
 }
 
-function createTerrainOptions(config: AppConfig): TerrainOptions {
-  if (cesiumToken) {
-    return {
-      type: 'cesium-ion',
-      apiToken: cesiumToken,
-      assetId: 1,
-      tileLoading: {
-        enableTileSplitting: false,
-        imageryResolution: 256
-      }
-    }
-  }
-
+function createTerrainOptions(): TerrainOptions {
   return {
     type: 'url',
-    url: `${config.maptilerUrl}layer.json`,
+    url: '/terrain-cache/layer.json',
     tileLoading: {
       enableTileSplitting: false,
       imageryResolution: 256
@@ -160,12 +162,11 @@ function createTerrainBadge() {
   terrainStatus.dataset.tone = 'ok'
   const label = terrainStatus.querySelector('span')
   const dot = terrainStatus.querySelector('i')
-  if (label) label.textContent = 'Cesium 影像'
+  if (label) label.textContent = '本地缓存地形'
   if (dot) dot.style.background = 'var(--accent-green)'
 
-  consoleNote.innerHTML = cesiumToken
-    ? '<span class="note-dot"></span><p>已切换到 <b>Cesium 图源</b>：ArcGIS World Imagery。Cesium Ion 地形在当前网络不可达，默认不加载地形。</p>'
-    : '<span class="note-dot"></span><p>已切换到 <b>Cesium 图源</b>：ArcGIS World Imagery。Cesium Ion 地形在当前网络不可达，默认不加载地形；<code>?ion=1</code> 可尝试。</p>'
+  consoleNote.innerHTML =
+    '<span class="note-dot"></span><p>地形与影像来自本地缓存 (.cache/tiles)。</p>'
 }
 
 function beijingTimeToDate(totalMinutes: number): Date {
@@ -190,12 +191,18 @@ function formatAltitude(meters: number): string {
   return `${meters.toFixed(0)} m`
 }
 
+let waterEditor: WaterEditor | null = null
+
+function mountWaterEditor(viewer: InstanceType<typeof tellux.Viewer>) {
+  if (waterEditor) return
+  waterEditor = new WaterEditor(viewer, { toast: showToast })
+  ;(window as unknown as { waterEditor: WaterEditor }).waterEditor = waterEditor
+}
+
 async function boot() {
-  setLoader(14, '读取 Cesium 图源配置…')
-  const config = await loadConfig()
-  if (forceIon && !cesiumToken) cesiumToken = config.cesiumIonToken
+  setLoader(14, '读取本地地形缓存配置…')
   createTerrainBadge()
-  setLoader(38, '连接 Cesium 地形与影像…')
+  setLoader(38, '连接本地地形与影像缓存…')
 
   const initialView = INITIAL_VIEW
   const initialTime = beijingTimeToDate(930)
@@ -264,14 +271,19 @@ async function boot() {
 
   for (const overlay of createOverlays()) viewer.overlays.add(overlay)
   viewer.globe.show = true
-  // Cesium Ion API and the MapTiler URL terrain are currently unreachable /
-  // stuck at level 1 on this network, so default to the fast ArcGIS imagery
-  // globe. Use ?ion=1 or ?terrain=maptiler to opt back in.
-  if (forceIon && cesiumToken) {
-    viewer.terrain.set(createTerrainOptions(config))
-  } else if (forceMapTilerTerrain) {
-    viewer.terrain.set(createTerrainOptions(config))
-  }
+  viewer.terrain.set(createTerrainOptions())
+  const label = terrainStatus.querySelector('span')
+  if (label) label.textContent = '本地缓存地形'
+  setLoader(100, '就绪')
+  hideLoader(260)
+
+  mountWaterEditor(viewer)
+
+  void fetchTileCacheStats().then((stats) => {
+    if (stats) {
+      consoleNote.innerHTML = `<span class="note-dot"></span><p>${describeCache(stats)}</p>`
+    }
+  })
 
   const cloudsToggle = $<HTMLInputElement>('#clouds-toggle')
   const atmosphereToggle = $<HTMLInputElement>('#atmosphere-toggle')
@@ -279,17 +291,51 @@ async function boot() {
   const coverageValue = $<HTMLOutputElement>('#coverage-value')
   const cloudAltitude = $<HTMLInputElement>('#cloud-altitude')
   const cloudAltitudeValue = $<HTMLOutputElement>('#cloud-altitude-value')
+  const cloudHeight = $<HTMLInputElement>('#cloud-height')
+  const cloudHeightValue = $<HTMLOutputElement>('#cloud-height-value')
+  const cloudSpeed = $<HTMLInputElement>('#cloud-speed')
+  const cloudSpeedValue = $<HTMLOutputElement>('#cloud-speed-value')
+  const cloudDetail = $<HTMLInputElement>('#cloud-detail')
+  const cloudTurbulence = $<HTMLInputElement>('#cloud-turbulence')
+  const cloudHaze = $<HTMLInputElement>('#cloud-haze')
+  const cloudLightShafts = $<HTMLInputElement>('#cloud-light-shafts')
+  const cloudShadowQuality = $<HTMLInputElement>('#cloud-shadow-quality')
+  const cloudShadowQualityValue = $<HTMLOutputElement>('#cloud-shadow-quality-value')
   const quality = $<HTMLInputElement>('#quality')
   const qualityValue = $<HTMLOutputElement>('#quality-value')
   const localHour = $<HTMLInputElement>('#local-hour')
   const localHourValue = $<HTMLOutputElement>('#local-hour-value')
   const fpsStatus = $('#fps-status')
 
+  /** 云层流动速度：面板 0–8 档 × 基础值 0.001 UV/s。 */
+  const CLOUD_SPEED_UNIT = 0.001
+
+  const persistCloudPrefs = (): void => {
+    writeCloudPrefs({
+      show: cloudsToggle.checked,
+      coverage: Number(coverage.value) / 100,
+      altitude: Number(cloudAltitude.value),
+      height: Number(cloudHeight.value),
+      speed: Number(cloudSpeed.value) * CLOUD_SPEED_UNIT,
+      quality: QUALITY_PRESETS[Number(quality.value)] ?? 'high',
+      lightShafts: cloudLightShafts.checked,
+      detail: cloudDetail.checked,
+      turbulence: cloudTurbulence.checked,
+      haze: cloudHaze.checked,
+      shadow: SHADOW_PRESETS[Number(cloudShadowQuality.value)] ?? 'medium'
+    })
+  }
+
   const setCloudAltitude = (meters: number) => {
     viewer.scene.clouds.layer.altitude = meters
-    viewer.scene.clouds.layer.height = Math.max(250, Math.min(1100, Math.round(meters * 0.09)))
     cloudAltitude.value = String(Math.round(meters))
     cloudAltitudeValue.textContent = `${Math.round(meters)} m`
+  }
+
+  const setCloudHeight = (meters: number) => {
+    viewer.scene.clouds.layer.height = meters
+    cloudHeight.value = String(Math.round(meters))
+    cloudHeightValue.textContent = `${Math.round(meters)} m`
   }
 
   cloudsToggle.checked = false
@@ -298,20 +344,60 @@ async function boot() {
     const span = cloudStatus.querySelector('span')
     if (span) span.textContent = cloudsToggle.checked ? '已开启' : '已关闭'
     cloudStatus.style.opacity = cloudsToggle.checked ? '1' : '0.55'
+    persistCloudPrefs()
   })
 
   coverage.addEventListener('input', () => {
     const percent = Number(coverage.value)
     viewer.scene.clouds.coverage = percent / 100
     coverageValue.textContent = `${percent}%`
+    persistCloudPrefs()
   })
 
-  cloudAltitude.addEventListener('input', () => setCloudAltitude(Number(cloudAltitude.value)))
+  cloudAltitude.addEventListener('input', () => {
+    setCloudAltitude(Number(cloudAltitude.value))
+    persistCloudPrefs()
+  })
+  cloudHeight.addEventListener('input', () => {
+    setCloudHeight(Number(cloudHeight.value))
+    persistCloudPrefs()
+  })
+
+  cloudSpeed.addEventListener('input', () => {
+    const factor = Number(cloudSpeed.value)
+    viewer.scene.clouds.speed = factor * CLOUD_SPEED_UNIT
+    cloudSpeedValue.textContent = `${factor.toFixed(1)}×`
+    persistCloudPrefs()
+  })
+
+  cloudDetail.addEventListener('change', () => {
+    viewer.scene.clouds.look.detail = cloudDetail.checked
+    persistCloudPrefs()
+  })
+  cloudTurbulence.addEventListener('change', () => {
+    viewer.scene.clouds.look.turbulence = cloudTurbulence.checked
+    persistCloudPrefs()
+  })
+  cloudHaze.addEventListener('change', () => {
+    viewer.scene.clouds.look.haze = cloudHaze.checked
+    persistCloudPrefs()
+  })
+  cloudLightShafts.addEventListener('change', () => {
+    viewer.scene.clouds.lightShafts = cloudLightShafts.checked
+    persistCloudPrefs()
+  })
+  cloudShadowQuality.addEventListener('input', () => {
+    const index = Math.max(0, Math.min(SHADOW_PRESETS.length - 1, Number(cloudShadowQuality.value)))
+    viewer.scene.clouds.shadow.quality = SHADOW_PRESETS[index]
+    cloudShadowQualityValue.textContent = SHADOW_LABELS[index]
+    persistCloudPrefs()
+  })
 
   quality.addEventListener('input', () => {
     const index = Math.max(0, Math.min(QUALITY_PRESETS.length - 1, Number(quality.value)))
     viewer.scene.clouds.quality = QUALITY_PRESETS[index]
     qualityValue.textContent = QUALITY_LABELS[index]
+    persistCloudPrefs()
   })
 
   atmosphereToggle.addEventListener('change', () => {
@@ -340,11 +426,67 @@ async function boot() {
 
   setCloudAltitude(initialView.cloudAltitude)
   cloudAltitudeValue.textContent = `${initialView.cloudAltitude} m`
+  setCloudHeight(initialView.cloudThickness)
+  cloudHeightValue.textContent = `${initialView.cloudThickness} m`
+  cloudSpeed.value = '1'
+  cloudSpeedValue.textContent = '1.0×'
+  viewer.scene.clouds.speed = CLOUD_SPEED_UNIT
+  cloudDetail.checked = true
+  cloudTurbulence.checked = true
+  cloudHaze.checked = true
+  cloudLightShafts.checked = true
+  cloudShadowQuality.value = '1'
+  cloudShadowQualityValue.textContent = SHADOW_LABELS[1]
   qualityValue.textContent = QUALITY_LABELS[DEFAULT_QUALITY_INDEX]
   quality.value = String(DEFAULT_QUALITY_INDEX)
   localHourValue.textContent = formatTime(930)
   const clockSpan = fpsStatus.querySelector('span')
   if (clockSpan) clockSpan.textContent = formatTime(930)
+
+  // 恢复上次的体积云手动设置（localStorage；没有记录时保持默认值）。
+  const storedCloudPrefs = readCloudPrefs()
+  const setStoredRange = (
+    input: HTMLInputElement,
+    value: unknown,
+    min: number,
+    max: number
+  ): void => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return
+    input.value = String(Math.min(max, Math.max(min, value)))
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  }
+  const setStoredChecked = (input: HTMLInputElement, value: unknown): void => {
+    if (typeof value !== 'boolean' || input.checked === value) return
+    input.checked = value
+    input.dispatchEvent(new Event('change', { bubbles: true }))
+  }
+  if (typeof storedCloudPrefs.quality === 'string') {
+    const index = (QUALITY_PRESETS as readonly string[]).indexOf(storedCloudPrefs.quality)
+    if (index >= 0) setStoredRange(quality, index, 0, QUALITY_PRESETS.length - 1)
+  }
+  if (typeof storedCloudPrefs.shadow === 'string') {
+    const index = (SHADOW_PRESETS as readonly string[]).indexOf(storedCloudPrefs.shadow)
+    if (index >= 0) setStoredRange(cloudShadowQuality, index, 0, SHADOW_PRESETS.length - 1)
+  }
+  setStoredRange(
+    coverage,
+    typeof storedCloudPrefs.coverage === 'number' ? storedCloudPrefs.coverage * 100 : undefined,
+    0,
+    100
+  )
+  setStoredRange(cloudAltitude, storedCloudPrefs.altitude, 800, 16000)
+  setStoredRange(cloudHeight, storedCloudPrefs.height, 120, 4000)
+  setStoredRange(
+    cloudSpeed,
+    typeof storedCloudPrefs.speed === 'number' ? storedCloudPrefs.speed / CLOUD_SPEED_UNIT : undefined,
+    0,
+    8
+  )
+  setStoredChecked(cloudDetail, storedCloudPrefs.detail)
+  setStoredChecked(cloudTurbulence, storedCloudPrefs.turbulence)
+  setStoredChecked(cloudHaze, storedCloudPrefs.haze)
+  setStoredChecked(cloudLightShafts, storedCloudPrefs.lightShafts)
+  setStoredChecked(cloudsToggle, storedCloudPrefs.show)
 
   setLoader(100, '就绪')
   hideLoader(260)
@@ -362,6 +504,7 @@ async function boot() {
 
   window.addEventListener('beforeunload', () => {
     window.clearInterval(readoutTimer)
+    waterEditor?.dispose()
     viewer.destroy()
   })
 }

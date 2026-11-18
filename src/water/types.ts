@@ -1,0 +1,304 @@
+/**
+ * 水体编辑器共享契约：状态模型、常量与网格坐标约定。
+ *
+ * 本文件是 UI / 模拟 / 渲染三层之间唯一的类型来源：
+ * - `src/water/waterEditor.ts` 只读写 `WaterState`；
+ * - `src/water/shallowWater.ts` 只消费 `SimTerrain` / `SimSource`；
+ * - `src/water/waterSurface.ts` 只消费模拟纹理与 `SurfaceDomain`。
+ *
+ * 坐标约定（三层必须一致）：
+ * - 模拟域是以 `origin` 为原点、边长 `sizeMeters` 的切平面正方形；
+ * - 网格索引 `i` 沿东（+x）从 0 到 N-1，`j` 沿北（+z）从 0 到 N-1；
+ * - 纹理 `uv = ((i + 0.5) / N, (j + 0.5) / N)`，即 v=0 是南边、v=1 是北边；
+ * - 网格高度为相对域中心椭球高 `baseElevation` 的米数。
+ */
+
+export const WATER_STATE_VERSION = 1
+export const WATER_STORAGE_KEY = 'tellux-water-editor-v1'
+export const WATER_MODE_STORAGE_KEY = 'tellux-water-editor-mode-v1'
+export const MAX_WATER_SOURCES = 8
+
+/** 模拟域固定中心与边长（米）：116.77, 36.02 附近的 8 km × 8 km 区域。 */
+export const WATER_DOMAIN = Object.freeze({
+  longitude: 116.77,
+  latitude: 36.02,
+  sizeMeters: 8000
+})
+
+/** 模拟网格边长档位。 */
+export const SIM_RESOLUTION_OPTIONS = [192, 256, 384] as const
+export type SimResolution = (typeof SIM_RESOLUTION_OPTIONS)[number]
+
+/** 地形高度场采样网格边长（固定 97×97，约 0.2 ms/点）。 */
+export const TERRAIN_GRID_SIZE = 97
+
+export const SIM_DEFAULTS = {
+  speed: 1,
+  waterAmount: 15,
+  resolution: 256
+} as const
+
+export const VISUAL_DEFAULTS = {
+  shimmer: 1,
+  glint: 1,
+  reflection: 1,
+  ripple: 1,
+  rippleScale: 1,
+  flowSpeed: 1,
+  foam: 1,
+  clarity: 0.62
+} as const
+
+export interface LonLat {
+  longitude: number
+  latitude: number
+}
+
+export interface WaterDomainState extends LonLat {
+  /** 模拟域边长（米）。 */
+  sizeMeters: number
+}
+
+export interface WaterSource {
+  id: string
+  name: string
+  longitude: number
+  latitude: number
+  /** 注水半径（米）。数据层 20–3000，面板滑块 20–2000。 */
+  radius: number
+  /** 目标水面绝对椭球高程（米）；null = 不限制。 */
+  targetLevel: number | null
+  /** 该水源每次注水的水深（米）；null = 跟随 sim.waterAmount。 */
+  amount: number | null
+  enabled: boolean
+  /** 最近一次采样得到的地面绝对高程（米）；用于面板显示与默认目标水位。 */
+  groundLevel: number | null
+}
+
+export interface WaterSimSettings {
+  /** 模拟速度倍率 0.1–32。 */
+  speed: number
+  /** 每次注水量（米）1–300。 */
+  waterAmount: number
+  /** 模拟网格边长。 */
+  resolution: number
+  paused: boolean
+}
+
+export interface WaterVisualSettings {
+  /** 太阳高光强度 0–3。 */
+  shimmer: number
+  /** 太阳高光锐度 0.3–2.5（越大高光越集中、越锐利）。 */
+  glint: number
+  /** 天空反射强度 0–1.5（菲涅尔反射混合比例）。 */
+  reflection: number
+  /** 波纹强度 0–2。 */
+  ripple: number
+  /** 波纹尺度 0.4–2.5（越大纹理越细）。 */
+  rippleScale: number
+  /** 波纹平流速度 0–2。 */
+  flowSpeed: number
+  /** 泡沫强度 0–2。 */
+  foam: number
+  /** 水体清澈度 0–1。 */
+  clarity: number
+}
+
+export interface WaterState {
+  version: number
+  /** 水体总开关：关闭后不渲染水面、也不推进模拟。 */
+  enabled: boolean
+  /** 模拟域；null = 尚未建立。 */
+  domain: WaterDomainState | null
+  sim: WaterSimSettings
+  visual: WaterVisualSettings
+  sources: WaterSource[]
+}
+
+/** 地形高度场：相对 baseElevation 的米数，行主序 `j * N + i`。 */
+export interface TerrainField {
+  origin: LonLat
+  sizeMeters: number
+  /** 网格边长（TERRAIN_GRID_SIZE）。 */
+  resolution: number
+  baseElevation: number
+  heights: Float32Array
+}
+
+/** 模拟层消费的地形：重采样到模拟分辨率。 */
+export interface SimTerrain {
+  origin: LonLat
+  sizeMeters: number
+  /** 模拟网格边长。 */
+  resolution: number
+  baseElevation: number
+  /** length = resolution²，相对 baseElevation 的米数，行主序 `j * N + i`。 */
+  heights: Float32Array
+}
+
+export interface SimSource {
+  /** 相对域中心的东向偏移（米）。 */
+  x: number
+  /** 相对域中心的北向偏移（米）。 */
+  z: number
+  radius: number
+  /** 目标水面绝对高程（米）；null = 不限制。 */
+  targetLevel: number | null
+  /** 每次注水水深（米）。 */
+  amount: number
+  enabled: boolean
+}
+
+export interface SimSettings {
+  speed: number
+  paused: boolean
+  waterAmount: number
+}
+
+export interface SimStats {
+  steps: number
+  wetCells: number
+  maxDepth: number
+  /** 最近一帧模拟 GPU 耗时（毫秒，估算值）。 */
+  simMs: number
+}
+
+/** 水面渲染层消费的域信息。 */
+export interface SurfaceDomain {
+  origin: LonLat
+  sizeMeters: number
+  resolution: number
+  baseElevation: number
+}
+
+export const clamp = (value: number, min: number, max: number): number =>
+  Math.min(max, Math.max(min, value))
+
+export function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value)
+}
+
+export function nearestOption<T extends number>(options: readonly T[], value: unknown, fallback: T): T {
+  if (!isFiniteNumber(value)) return fallback
+  let best = options[0]
+  let bestDistance = Number.POSITIVE_INFINITY
+  for (const option of options) {
+    const distance = Math.abs(option - value)
+    if (distance < bestDistance) {
+      best = option
+      bestDistance = distance
+    }
+  }
+  return best
+}
+
+let sourceCounter = 0
+
+export function createSourceId(): string {
+  sourceCounter += 1
+  return `wsrc_${Date.now().toString(36)}_${sourceCounter.toString(36)}`
+}
+
+/** 深拷贝，避免 UI 与运行时共享可变对象。 */
+export function cloneState(state: WaterState): WaterState {
+  return {
+    version: state.version,
+    enabled: state.enabled,
+    domain: state.domain ? { ...state.domain } : null,
+    sim: { ...state.sim },
+    visual: { ...state.visual },
+    sources: state.sources.map((source) => ({ ...source }))
+  }
+}
+
+export function createDefaultState(): WaterState {
+  return {
+    version: WATER_STATE_VERSION,
+    enabled: true,
+    domain: null,
+    sim: { ...SIM_DEFAULTS, paused: false },
+    visual: { ...VISUAL_DEFAULTS },
+    sources: []
+  }
+}
+
+/** 校验并归一化来自 localStorage / 导入文件的任意 JSON。 */
+export function normalizeWaterState(raw: unknown): WaterState {
+  const defaults = createDefaultState()
+  if (!raw || typeof raw !== 'object') return defaults
+  const input = raw as Record<string, unknown>
+
+  const enabled = typeof input.enabled === 'boolean' ? input.enabled : defaults.enabled
+
+  let domain: WaterDomainState | null = null
+  const rawDomain = input.domain
+  if (rawDomain && typeof rawDomain === 'object') {
+    // 模拟域固定为 116.77, 36.02 的 8 km × 8 km；旧工程/旧尺寸一律迁移到固定区域。
+    domain = { ...WATER_DOMAIN }
+  }
+
+  const rawSim = input.sim && typeof input.sim === 'object' ? (input.sim as Record<string, unknown>) : {}
+  const sim: WaterSimSettings = {
+    speed: isFiniteNumber(rawSim.speed) ? clamp(rawSim.speed, 0.1, 32) : defaults.sim.speed,
+    waterAmount: isFiniteNumber(rawSim.waterAmount)
+      ? clamp(rawSim.waterAmount, 1, 300)
+      : defaults.sim.waterAmount,
+    resolution: nearestOption(SIM_RESOLUTION_OPTIONS, rawSim.resolution, 256),
+    paused: rawSim.paused === true
+  }
+
+  const rawVisual = input.visual && typeof input.visual === 'object' ? (input.visual as Record<string, unknown>) : {}
+  const visual: WaterVisualSettings = {
+    shimmer: isFiniteNumber(rawVisual.shimmer) ? clamp(rawVisual.shimmer, 0, 3) : defaults.visual.shimmer,
+    glint: isFiniteNumber(rawVisual.glint) ? clamp(rawVisual.glint, 0.3, 2.5) : defaults.visual.glint,
+    reflection: isFiniteNumber(rawVisual.reflection)
+      ? clamp(rawVisual.reflection, 0, 1.5)
+      : defaults.visual.reflection,
+    ripple: isFiniteNumber(rawVisual.ripple) ? clamp(rawVisual.ripple, 0, 2) : defaults.visual.ripple,
+    rippleScale: isFiniteNumber(rawVisual.rippleScale)
+      ? clamp(rawVisual.rippleScale, 0.4, 2.5)
+      : defaults.visual.rippleScale,
+    flowSpeed: isFiniteNumber(rawVisual.flowSpeed)
+      ? clamp(rawVisual.flowSpeed, 0, 2)
+      : defaults.visual.flowSpeed,
+    foam: isFiniteNumber(rawVisual.foam) ? clamp(rawVisual.foam, 0, 2) : defaults.visual.foam,
+    clarity: isFiniteNumber(rawVisual.clarity) ? clamp(rawVisual.clarity, 0, 1) : defaults.visual.clarity
+  }
+
+  const sources: WaterSource[] = []
+  if (Array.isArray(input.sources)) {
+    for (const item of input.sources) {
+      if (sources.length >= MAX_WATER_SOURCES) break
+      if (!item || typeof item !== 'object') continue
+      const s = item as Record<string, unknown>
+      if (!isFiniteNumber(s.longitude) || !isFiniteNumber(s.latitude)) continue
+      if (Math.abs(s.longitude) > 180 || Math.abs(s.latitude) > 85) continue
+      const targetLevel =
+        isFiniteNumber(s.targetLevel) && s.targetLevel > -1000 && s.targetLevel < 20000
+          ? s.targetLevel
+          : null
+      const amount = isFiniteNumber(s.amount) && s.amount >= 0.5 && s.amount <= 300 ? s.amount : null
+      const groundLevel = isFiniteNumber(s.groundLevel) ? s.groundLevel : null
+      sources.push({
+        id: typeof s.id === 'string' && s.id ? s.id : createSourceId(),
+        name: typeof s.name === 'string' && s.name.trim() ? s.name.trim().slice(0, 40) : `水源 ${sources.length + 1}`,
+        longitude: clamp(s.longitude, -180, 180),
+        latitude: clamp(s.latitude, -85, 85),
+        radius: isFiniteNumber(s.radius) ? clamp(s.radius, 20, 3000) : 150,
+        targetLevel,
+        amount,
+        enabled: s.enabled !== false,
+        groundLevel
+      })
+    }
+  }
+
+  return {
+    version: WATER_STATE_VERSION,
+    enabled,
+    domain,
+    sim,
+    visual,
+    sources
+  }
+}
