@@ -35,6 +35,9 @@ test('默认状态合法', () => {
   assert.equal(state.sim.waterAmount, 15)
   assert.equal(state.sim.resolution, 256)
   assert.equal(state.sim.paused, false)
+  assert.equal(state.sim.maxFlowSpeed, 30)
+  assert.equal(state.sim.damping, 0.995)
+  assert.equal(state.sim.injectInterval, 2)
   assert.equal(state.visual.shimmer, 1)
   assert.equal(state.visual.glint, 1)
   assert.equal(state.visual.reflection, 1)
@@ -43,6 +46,7 @@ test('默认状态合法', () => {
   assert.equal(state.visual.flowSpeed, 1)
   assert.equal(state.visual.foam, 1)
   assert.equal(state.visual.clarity, 0.62)
+  assert.equal(state.visual.opacity, 0)
 })
 
 test('非法输入回落到默认值', () => {
@@ -68,7 +72,7 @@ test('数值字段夹到合法范围', () => {
       clarity: 3
     }
   })
-  assert.equal(state.sim.speed, 32)
+  assert.equal(state.sim.speed, 64)
   assert.equal(state.sim.waterAmount, 1)
   assert.equal(state.sim.paused, true)
   // 300 最接近 256 档
@@ -95,6 +99,42 @@ test('旧工程缺失的外观字段补默认值', () => {
   assert.equal(state.visual.rippleScale, 1)
   assert.equal(state.visual.flowSpeed, 1)
   assert.equal(state.visual.foam, 1)
+  assert.equal(state.visual.opacity, 0)
+})
+
+test('水面不透明度归一化与旧工程兼容', () => {
+  assert.equal(normalizeWaterState({ visual: { opacity: 0.6 } }).visual.opacity, 0.6)
+  assert.equal(normalizeWaterState({ visual: { opacity: 2 } }).visual.opacity, 1)
+  assert.equal(normalizeWaterState({ visual: { opacity: -1 } }).visual.opacity, 0)
+  assert.equal(normalizeWaterState({ visual: { opacity: 'yes' } }).visual.opacity, 0)
+  // 短暂的布尔版本工程：opaque true 迁移为完全不透明。
+  assert.equal(normalizeWaterState({ visual: { opaque: true } }).visual.opacity, 1)
+  assert.equal(normalizeWaterState({ visual: { opaque: false } }).visual.opacity, 0)
+  const cloned = cloneState(normalizeWaterState({ visual: { opacity: 0.4 } }))
+  assert.equal(cloned.visual.opacity, 0.4)
+})
+
+test('水流参数归一化', () => {
+  const high = normalizeWaterState({
+    sim: { maxFlowSpeed: 999, damping: 2, injectInterval: 99 }
+  })
+  assert.equal(high.sim.maxFlowSpeed, 60)
+  assert.equal(high.sim.damping, 1)
+  assert.equal(high.sim.injectInterval, 8)
+
+  const low = normalizeWaterState({
+    sim: { maxFlowSpeed: -5, damping: 0.1, injectInterval: 0 }
+  })
+  assert.equal(low.sim.maxFlowSpeed, 5)
+  assert.equal(low.sim.damping, 0.9)
+  assert.equal(low.sim.injectInterval, 1)
+
+  const rounded = normalizeWaterState({ sim: { injectInterval: 2.6 } })
+  assert.equal(rounded.sim.injectInterval, 3)
+  const missing = normalizeWaterState({ sim: {} })
+  assert.equal(missing.sim.maxFlowSpeed, 30)
+  assert.equal(missing.sim.damping, 0.995)
+  assert.equal(missing.sim.injectInterval, 2)
 })
 
 test('无效坐标的水源被丢弃', () => {
@@ -150,8 +190,8 @@ test('模拟域固定为 116.77, 36.02 的 8 km × 8 km', () => {
   assert.equal(WATER_DOMAIN.sizeMeters, 8000)
 })
 
-test('模拟速度上限为 32×', () => {
-  assert.equal(normalizeWaterState({ sim: { speed: 99 } }).sim.speed, 32)
+test('模拟速度上限为 64×', () => {
+  assert.equal(normalizeWaterState({ sim: { speed: 99 } }).sim.speed, 64)
   assert.equal(normalizeWaterState({ sim: { speed: 24.5 } }).sim.speed, 24.5)
   assert.equal(normalizeWaterState({ sim: { speed: 0.01 } }).sim.speed, 0.1)
   assert.equal(normalizeWaterState({ sim: { speed: 4 } }).sim.speed, 4)

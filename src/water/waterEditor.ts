@@ -11,6 +11,8 @@ import {
   type LocalProjection
 } from './terrainField'
 import { computeSunDirectionENU } from './sun'
+import { delay, nextFrame } from './async'
+import { requireElement as $, syncRangeFill } from '../ui/dom'
 import {
   clearCachedDomainField,
   clearServerDomainField,
@@ -51,12 +53,6 @@ export interface WaterEditorOptions {
   toast(message: string, duration?: number): void
 }
 
-const $ = <T extends HTMLElement>(selector: string): T => {
-  const element = document.querySelector<T>(selector)
-  if (!element) throw new Error(`水体编辑器 UI 元素缺失：${selector}`)
-  return element
-}
-
 const formatMeters = (value: number | null | undefined): string => {
   if (typeof value !== 'number' || !Number.isFinite(value)) return '—'
   return value >= 1000 ? `${(value / 1000).toFixed(2)} km` : `${value.toFixed(1)} m`
@@ -64,12 +60,6 @@ const formatMeters = (value: number | null | undefined): string => {
 
 const formatLonLat = (longitude: number, latitude: number): string =>
   `${longitude.toFixed(5)}°, ${latitude.toFixed(5)}°`
-
-const nextFrame = (): Promise<void> =>
-  new Promise((resolve) => {
-    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => resolve())
-    else window.setTimeout(resolve, 0)
-  })
 
 interface DragState {
   id: string
@@ -89,6 +79,18 @@ interface BuildTask {
   token: number
   cancel: { cancelled: boolean }
   promise: Promise<boolean>
+}
+
+/** 外观滑杆对应的数值字段。 */
+type NumericVisualKey = keyof WaterVisualSettings
+
+/** 一条外观滑杆：状态键、控件与取值范围。 */
+interface VisualControl {
+  key: NumericVisualKey
+  input: HTMLInputElement
+  output: HTMLOutputElement
+  min: number
+  max: number
 }
 
 /**
@@ -146,8 +148,6 @@ export class WaterEditor {
   private readonly waterPill = $('#water-status-pill')
   private readonly addButton = $<HTMLButtonElement>('#water-add-source')
   private readonly clearButton = $<HTMLButtonElement>('#water-clear-sources')
-  private readonly placeHint = $('#water-place-hint')
-  private readonly placeBanner = $('#water-place-banner')
   private readonly progress = $('#water-progress')
   private readonly progressBar = $('#water-progress-bar')
   private readonly progressLabel = $('#water-progress-label')
@@ -160,12 +160,16 @@ export class WaterEditor {
   private readonly amountValue = $<HTMLOutputElement>('#water-amount-value')
   private readonly resolutionInput = $<HTMLInputElement>('#water-resolution')
   private readonly resolutionValue = $<HTMLOutputElement>('#water-resolution-value')
+  private readonly maxFlowSpeedInput = $<HTMLInputElement>('#water-max-flow-speed')
+  private readonly maxFlowSpeedValue = $<HTMLOutputElement>('#water-max-flow-speed-value')
+  private readonly dampingInput = $<HTMLInputElement>('#water-damping')
+  private readonly dampingValue = $<HTMLOutputElement>('#water-damping-value')
+  private readonly injectIntervalInput = $<HTMLInputElement>('#water-inject-interval')
+  private readonly injectIntervalValue = $<HTMLOutputElement>('#water-inject-interval-value')
   private readonly pauseButton = $<HTMLButtonElement>('#water-pause')
   private readonly resetButton = $<HTMLButtonElement>('#water-reset')
   private readonly statusLine = $('#water-status')
   private readonly sourceEditor = $('#water-source-editor')
-  private readonly sourceEmpty = $('#water-source-empty')
-  private readonly sourceFields = $('#water-source-fields')
   private readonly sourceName = $<HTMLInputElement>('#water-source-name')
   private readonly sourceGround = $<HTMLOutputElement>('#water-source-ground')
   private readonly sourceRadius = $<HTMLInputElement>('#water-source-radius')
@@ -190,12 +194,15 @@ export class WaterEditor {
   private readonly appearanceReset = $<HTMLButtonElement>('#water-appearance-reset')
   private readonly clarityInput = $<HTMLInputElement>('#water-clarity')
   private readonly clarityValue = $<HTMLOutputElement>('#water-clarity-value')
+  private readonly opacityInput = $<HTMLInputElement>('#water-opacity')
+  private readonly opacityValue = $<HTMLOutputElement>('#water-opacity-value')
   private readonly saveButton = $<HTMLButtonElement>('#water-save')
   private readonly exportButton = $<HTMLButtonElement>('#water-export')
   private readonly importButton = $<HTMLButtonElement>('#water-import')
   private readonly importInput = $<HTMLInputElement>('#water-import-file')
   private readonly projectStatus = $('#water-project-status')
-  private readonly sceneNote = $('#water-scene-note')
+  /** 外观滑杆与状态字段的对应表：同步与绑定共用，避免两处各列一遍。 */
+  private readonly visualControls: VisualControl[]
 
   constructor(viewer: Viewer, options: WaterEditorOptions) {
     this.viewer = viewer
@@ -206,6 +213,7 @@ export class WaterEditor {
     this.state = loadStoredState()
     this.markers = new SourceMarkers(viewer, { scene: this.scene, labelContainer: this.waterLabels })
     this.boundary = new DomainBoundary(viewer, this.scene)
+    this.visualControls = this.createVisualControls()
 
     this.bindEvents()
     this.syncAll()
@@ -443,7 +451,7 @@ export class WaterEditor {
         }
         if (!field) break
         // 采样期间地形瓦片可能继续细化：等一拍再比对域中心高程，漂移明显就重新采样。
-        await new Promise<void>((resolve) => window.setTimeout(resolve, 900))
+        await delay(900)
         if (token !== this.buildToken) {
           finish(false)
           return false
@@ -548,7 +556,7 @@ export class WaterEditor {
     const started = performance.now()
     while (performance.now() - started < maxMs) {
       if (typeof this.sampleGround(center.longitude, center.latitude) === 'number') return true
-      await new Promise<void>((resolve) => window.setTimeout(resolve, 350))
+      await delay(350)
     }
     return false
   }
@@ -570,7 +578,7 @@ export class WaterEditor {
     let previous: number | undefined
     let stableCount = 0
     while (performance.now() - started < maxMs) {
-      await new Promise<void>((resolve) => window.setTimeout(resolve, 320))
+      await delay(320)
       const height = this.sampleGround(center.longitude, center.latitude)
       if (typeof height !== 'number') {
         stableCount = 0
@@ -603,24 +611,44 @@ export class WaterEditor {
     }
   }
 
+  /**
+   * 取某点的地面高程：显式采样值（如点选命中高度）优先，
+   * 其次用模拟地形场（与浅水模拟一致），最后回退到 viewer 实时采样。
+   */
+  private groundLevelAt(
+    longitude: number,
+    latitude: number,
+    preferred?: number | null
+  ): number | null {
+    if (typeof preferred === 'number' && Number.isFinite(preferred)) return preferred
+    const fromField = this.groundFromField(longitude, latitude)
+    if (typeof fromField === 'number') return fromField
+    return this.sampleGround(longitude, latitude) ?? null
+  }
+
+  /** 用当前地形场与投影建立模拟与水面；三者缺一不可（域重建期间会短暂缺失）。 */
   private createSimulation(): void {
-    if (!this.domain) return
+    const domain = this.domain
+    const field = this.field
+    const projection = this.projection
+    if (!domain || !field || !projection) return
+
     for (const source of this.state.sources) {
       const ground = this.groundFromField(source.longitude, source.latitude)
       if (typeof ground === 'number') source.groundLevel = ground
     }
-    const simTerrain = resampleTerrain(this.field as TerrainField, this.state.sim.resolution)
+    const simTerrain = resampleTerrain(field, this.state.sim.resolution)
     this.sim = new ShallowWaterSim(this.renderer, simTerrain)
     this.surface = new WaterSurface(
       this.viewer,
-      this.domain,
+      domain,
       this.sim.stateTexture,
       this.state.sim.resolution
     )
     this.applySimState()
     this.updateSun(true)
-    this.boundary.setDomain(this.domain, this.projection as LocalProjection).catch(() => {})
-    this.markers.setSources(this.state.sources, this.selectedId, this.projection)
+    this.boundary.setDomain(domain, projection).catch(() => {})
+    this.markers.setSources(this.state.sources, this.selectedId, projection)
   }
 
   private rebuildSimulation(): void {
@@ -658,7 +686,10 @@ export class WaterEditor {
     this.sim.setSettings({
       speed: this.state.sim.speed,
       paused: this.state.sim.paused,
-      waterAmount: this.state.sim.waterAmount
+      waterAmount: this.state.sim.waterAmount,
+      maxFlowSpeed: this.state.sim.maxFlowSpeed,
+      damping: this.state.sim.damping,
+      injectInterval: this.state.sim.injectInterval
     })
     this.sim.setSources(this.toSimSources())
     this.surface?.setVisual(this.state.visual)
@@ -702,7 +733,6 @@ export class WaterEditor {
     this.syncDomainMeta()
     this.syncStatus()
     this.syncPill()
-    this.syncSceneNote()
   }
 
   private syncModeUI(): void {
@@ -717,27 +747,25 @@ export class WaterEditor {
     this.markers.setVisible(this.mode === 'water')
     this.boundary.setVisible(this.mode === 'water')
     this.body.dataset.placing = this.placing ? 'true' : 'false'
-    this.placeHint.hidden = !this.placing
-    this.placeBanner.hidden = !this.placing
-    this.addButton.textContent = this.placing ? '结束放置' : '＋ 水源'
+    this.addButton.textContent = this.placing ? '取消放置' : '＋ 水源'
     this.addButton.classList.toggle('is-active', this.placing)
     this.canvas.style.cursor = this.placing ? 'crosshair' : ''
   }
 
-  /** 构建模拟域期间禁用会打断流程的按钮。 */
+  /** 构建模拟域期间禁用会打断流程的按钮；没有水源时「清空」也不可用。 */
   private syncBusy(): void {
     const busy = Boolean(this.build)
     this.addButton.disabled = busy
-    this.clearButton.disabled = busy
+    this.clearButton.disabled = busy || this.state.sources.length === 0
     this.rebuildButton.disabled = busy
     this.pauseButton.disabled = busy
     this.resetButton.disabled = busy
   }
 
   private syncSourceList(): void {
+    this.syncBusy()
     if (this.state.sources.length === 0) {
-      this.sourceList.innerHTML =
-        '<p class="empty-hint">还没有水源，点「＋ 水源」后在地形上单击放置</p>'
+      this.sourceList.innerHTML = '<p class="empty-hint">暂无水源</p>'
       return
     }
     this.sourceList.innerHTML = this.state.sources
@@ -748,30 +776,33 @@ export class WaterEditor {
             <span class="water-source-index">${index + 1}</span>
             <div class="water-source-copy">
               <b>${escapeHtml(source.name)}</b>
-              <small>高程 ${formatMeters(source.groundLevel)} · 半径 ${Math.round(source.radius)} m</small>
+              <small>
+                <span>高程 ${formatMeters(source.groundLevel)}</span>
+                <span>半径 ${Math.round(source.radius)} m</span>
+              </small>
             </div>
             <div class="water-source-item-actions">
-              <label class="mini-switch" title="启用 / 停用">
-                <input type="checkbox" data-action="toggle" ${source.enabled ? 'checked' : ''} />
+              <label class="mini-switch">
+                <input type="checkbox" data-action="toggle" aria-label="启用 ${escapeHtml(source.name)}" ${source.enabled ? 'checked' : ''} />
                 <span></span>
               </label>
-              <button type="button" class="icon-button" data-action="delete" title="删除水源">✕</button>
+              <button type="button" class="icon-button" data-action="delete" aria-label="删除 ${escapeHtml(source.name)}">✕</button>
             </div>
           </div>`
       })
       .join('')
   }
 
+  /** 选中水源编辑区只在有选中项时出现，避免空面板占位。 */
   private syncSourceEditor(): void {
     const source = this.selectedSource()
-    this.sourceEditor.dataset.empty = source ? 'false' : 'true'
-    this.sourceEmpty.hidden = Boolean(source)
-    this.sourceFields.hidden = !source
+    this.sourceEditor.hidden = !source
     if (!source) return
     this.sourceName.value = source.name
     this.sourceGround.textContent = formatMeters(source.groundLevel)
     this.sourceRadius.value = String(Math.round(source.radius))
     this.sourceRadiusValue.textContent = `${Math.round(source.radius)} m`
+    syncRangeFill(this.sourceRadius)
     this.sourceTarget.value =
       source.targetLevel == null ? '' : String(Number(source.targetLevel.toFixed(2)))
     this.sourceTarget.placeholder =
@@ -780,57 +811,75 @@ export class WaterEditor {
   }
 
   private syncSimControls(): void {
-    this.speedInput.value = String(this.state.sim.speed)
-    this.speedValue.textContent = `${this.state.sim.speed.toFixed(1)}×`
-    this.amountInput.value = String(Math.round(this.state.sim.waterAmount))
-    this.amountValue.textContent = `${Math.round(this.state.sim.waterAmount)} m`
+    const sim = this.state.sim
+    this.speedInput.value = String(sim.speed)
+    this.speedValue.textContent = `${sim.speed.toFixed(1)}×`
+    syncRangeFill(this.speedInput)
+    this.amountInput.value = String(Math.round(sim.waterAmount))
+    this.amountValue.textContent = `${Math.round(sim.waterAmount)} m`
+    syncRangeFill(this.amountInput)
     const index = Math.max(
       0,
-      (SIM_RESOLUTION_OPTIONS as readonly number[]).indexOf(this.state.sim.resolution)
+      (SIM_RESOLUTION_OPTIONS as readonly number[]).indexOf(sim.resolution)
     )
     this.resolutionInput.value = String(index)
-    this.resolutionValue.textContent = `${this.state.sim.resolution}²`
-    this.pauseButton.textContent = this.state.sim.paused ? '继续' : '暂停'
+    this.resolutionValue.textContent = `${sim.resolution}²`
+    syncRangeFill(this.resolutionInput)
+    this.maxFlowSpeedInput.value = String(sim.maxFlowSpeed)
+    this.maxFlowSpeedValue.textContent = `${Math.round(sim.maxFlowSpeed)} m/s`
+    syncRangeFill(this.maxFlowSpeedInput)
+    this.dampingInput.value = String(sim.damping)
+    this.dampingValue.textContent = sim.damping.toFixed(3)
+    syncRangeFill(this.dampingInput)
+    this.injectIntervalInput.value = String(sim.injectInterval)
+    this.injectIntervalValue.textContent = `${(sim.injectInterval / 60).toFixed(3)} s`
+    syncRangeFill(this.injectIntervalInput)
+    this.pauseButton.textContent = sim.paused ? '继续' : '暂停'
+  }
+
+  private createVisualControls(): VisualControl[] {
+    return [
+      { key: 'shimmer', input: this.shimmerInput, output: this.shimmerValue, min: 0, max: 3 },
+      { key: 'glint', input: this.glintInput, output: this.glintValue, min: 0.3, max: 2.5 },
+      {
+        key: 'reflection',
+        input: this.reflectionInput,
+        output: this.reflectionValue,
+        min: 0,
+        max: 1.5
+      },
+      { key: 'ripple', input: this.rippleInput, output: this.rippleValue, min: 0, max: 2 },
+      {
+        key: 'rippleScale',
+        input: this.rippleScaleInput,
+        output: this.rippleScaleValue,
+        min: 0.4,
+        max: 2.5
+      },
+      { key: 'flowSpeed', input: this.flowSpeedInput, output: this.flowSpeedValue, min: 0, max: 2 },
+      { key: 'foam', input: this.foamInput, output: this.foamValue, min: 0, max: 2 },
+      { key: 'clarity', input: this.clarityInput, output: this.clarityValue, min: 0, max: 1 },
+      { key: 'opacity', input: this.opacityInput, output: this.opacityValue, min: 0, max: 1 }
+    ]
   }
 
   private syncAppearance(): void {
-    const visual = this.state.visual
-    this.shimmerInput.value = String(visual.shimmer)
-    this.shimmerValue.textContent = visual.shimmer.toFixed(2)
-    this.glintInput.value = String(visual.glint)
-    this.glintValue.textContent = visual.glint.toFixed(2)
-    this.reflectionInput.value = String(visual.reflection)
-    this.reflectionValue.textContent = visual.reflection.toFixed(2)
-    this.rippleInput.value = String(visual.ripple)
-    this.rippleValue.textContent = visual.ripple.toFixed(2)
-    this.rippleScaleInput.value = String(visual.rippleScale)
-    this.rippleScaleValue.textContent = visual.rippleScale.toFixed(2)
-    this.flowSpeedInput.value = String(visual.flowSpeed)
-    this.flowSpeedValue.textContent = visual.flowSpeed.toFixed(2)
-    this.foamInput.value = String(visual.foam)
-    this.foamValue.textContent = visual.foam.toFixed(2)
-    this.clarityInput.value = String(visual.clarity)
-    this.clarityValue.textContent = visual.clarity.toFixed(2)
+    for (const control of this.visualControls) {
+      const value = this.state.visual[control.key]
+      control.input.value = String(value)
+      control.output.textContent = value.toFixed(2)
+      syncRangeFill(control.input)
+    }
   }
 
   private syncDomainMeta(): void {
     const terrainInfo = this.field ? `地形 ${this.field.resolution}²` : '地形采样中'
+    const center = formatLonLat(WATER_DOMAIN.longitude, WATER_DOMAIN.latitude)
     if (!this.state.domain) {
-      this.domainMeta.textContent = `固定模拟区 · ${formatLonLat(
-        WATER_DOMAIN.longitude,
-        WATER_DOMAIN.latitude
-      )} · 8 km × 8 km（尚未建立）`
+      this.domainMeta.textContent = `${center}\n尚未建立`
       return
     }
-    const sourceTag =
-      this.domainSource === 'cache'
-        ? ' · 本地'
-        : this.domainSource === 'sampled'
-          ? ' · 已缓存'
-          : ''
-    this.domainMeta.textContent =
-      `${formatLonLat(WATER_DOMAIN.longitude, WATER_DOMAIN.latitude)} · 8 km × 8 km · ` +
-      `${terrainInfo}${sourceTag} · 模拟 ${this.state.sim.resolution}²`
+    this.domainMeta.textContent = `${center}\n${terrainInfo} · 模拟 ${this.state.sim.resolution}²`
   }
 
   private syncStatus(): void {
@@ -845,47 +894,36 @@ export class WaterEditor {
     const stats = this.statsSnapshot
     const paused = this.state.sim.paused ? ' · 已暂停' : ''
     this.statusLine.textContent =
-      `步数 ${stats.steps} · 水源 ${this.state.sources.length} · 湿格 ${stats.wetCells}` +
-      ` · 最深 ${stats.maxDepth.toFixed(2)} m${paused}`
+      `步数 ${stats.steps} · 湿格 ${stats.wetCells} · 最深 ${stats.maxDepth.toFixed(2)} m${paused}`
   }
 
+  /** 顶部「水体」胶囊：构建 / 关闭 / 放置 / 未构建 / 运行状态。 */
   private syncPill(): void {
     const span = this.waterPill.querySelector('span')
+    const setState = (tone: 'ok' | 'warn', label: string): void => {
+      this.waterPill.dataset.tone = tone
+      if (span) span.textContent = label
+    }
     if (this.build) {
-      this.waterPill.dataset.tone = 'warn'
-      if (span) span.textContent = '构建中'
+      setState('warn', '构建中')
       return
     }
     if (!this.state.enabled) {
-      this.waterPill.dataset.tone = 'warn'
-      if (span) span.textContent = '已关闭'
+      setState('warn', '已关闭')
+      return
+    }
+    if (this.placing) {
+      setState('warn', '放置中')
       return
     }
     if (!this.isDomainReady) {
-      this.waterPill.dataset.tone = 'warn'
-      if (span) span.textContent = this.state.sources.length > 0 ? '未构建' : '未启用'
+      setState('warn', this.state.sources.length > 0 ? '未构建' : '未启用')
       return
     }
-    this.waterPill.dataset.tone = 'ok'
-    if (span) {
-      span.textContent = this.state.sim.paused
-        ? '已暂停'
-        : `运行中 · ${this.state.sources.length} 源`
-    }
-  }
-
-  private syncSceneNote(): void {
-    if (!this.state.enabled) {
-      this.sceneNote.textContent = '水面与模拟已关闭；打开开关后按浅水方程继续推进。'
-      return
-    }
-    if (this.isDomainReady) {
-      this.sceneNote.textContent = `模拟域已就绪 · 水源 ${this.state.sources.length} · 步数 ${this.statsSnapshot.steps}；切到「水体编辑」继续编辑。`
-    } else if (this.state.sources.length > 0) {
-      this.sceneNote.textContent = '已有水源配置，进入「水体编辑」后开始模拟。'
-    } else {
-      this.sceneNote.textContent = '进入「水体编辑」放置水源；水面按浅水方程自动漫溢、蓄积。'
-    }
+    setState(
+      'ok',
+      this.state.sim.paused ? '已暂停' : `运行中 · ${this.state.sources.length} 源`
+    )
   }
 
   private setProjectStatus(text: string): void {
@@ -895,6 +933,17 @@ export class WaterEditor {
   // ---------------------------------------------------------------- 交互
 
   private bindEvents(): void {
+    this.bindModeControls()
+    this.bindSimulationControls()
+    this.bindSourceControls()
+    this.bindAppearanceControls()
+    this.bindProjectControls()
+    window.addEventListener('keydown', this.handleKeyDown)
+    this.attachPointerEvents()
+  }
+
+  /** 模式切换与模拟域生命周期按钮。 */
+  private bindModeControls(): void {
     this.modeScene.addEventListener('click', () => {
       this.modeTouched = true
       void this.enterMode('scene')
@@ -906,19 +955,24 @@ export class WaterEditor {
     this.addButton.addEventListener('click', () => this.togglePlacing())
     this.clearButton.addEventListener('click', () => this.clearSources())
     this.rebuildButton.addEventListener('click', () => void this.rebuildFixedDomain())
+  }
 
+  /** 模拟参数：速度、注水量、精度、暂停、重置与水体总开关。 */
+  private bindSimulationControls(): void {
     this.speedInput.addEventListener('input', () => {
-      this.state.sim.speed = clamp(Number(this.speedInput.value), 0.1, 32)
+      this.state.sim.speed = clamp(Number(this.speedInput.value), 0.1, 64)
       this.speedValue.textContent = `${this.state.sim.speed.toFixed(1)}×`
       this.applySimState()
       this.scheduleSave()
     })
+
     this.amountInput.addEventListener('input', () => {
       this.state.sim.waterAmount = clamp(Number(this.amountInput.value), 1, 300)
       this.amountValue.textContent = `${Math.round(this.state.sim.waterAmount)} m`
       this.applySimState()
       this.scheduleSave()
     })
+
     this.resolutionInput.addEventListener('input', () => {
       const index = Math.round(
         clamp(Number(this.resolutionInput.value), 0, SIM_RESOLUTION_OPTIONS.length - 1)
@@ -930,6 +984,30 @@ export class WaterEditor {
       this.rebuildSimulation()
       this.scheduleSave()
     })
+
+    this.maxFlowSpeedInput.addEventListener('input', () => {
+      this.state.sim.maxFlowSpeed = clamp(Number(this.maxFlowSpeedInput.value), 5, 60)
+      this.maxFlowSpeedValue.textContent = `${Math.round(this.state.sim.maxFlowSpeed)} m/s`
+      this.applySimState()
+      this.scheduleSave()
+    })
+
+    this.dampingInput.addEventListener('input', () => {
+      this.state.sim.damping = clamp(Number(this.dampingInput.value), 0.9, 1)
+      this.dampingValue.textContent = this.state.sim.damping.toFixed(3)
+      this.applySimState()
+      this.scheduleSave()
+    })
+
+    this.injectIntervalInput.addEventListener('input', () => {
+      this.state.sim.injectInterval = Math.round(
+        clamp(Number(this.injectIntervalInput.value), 1, 8)
+      )
+      this.injectIntervalValue.textContent = `${(this.state.sim.injectInterval / 60).toFixed(3)} s`
+      this.applySimState()
+      this.scheduleSave()
+    })
+
     this.pauseButton.addEventListener('click', () => {
       this.state.sim.paused = !this.state.sim.paused
       this.syncSimControls()
@@ -938,8 +1016,12 @@ export class WaterEditor {
       this.syncPill()
       this.scheduleSave()
     })
+
     this.resetButton.addEventListener('click', () => {
-      this.sim?.reset()
+      if (this.sim) {
+        this.sim.reset()
+        this.surface?.setStateTexture(this.sim.stateTexture)
+      }
       this.statsSnapshot = { steps: 0, wetCells: 0, maxDepth: 0, simMs: 0 }
       this.syncStatus()
       this.options.toast('模拟已重置，水位归零', 2400)
@@ -949,12 +1031,14 @@ export class WaterEditor {
       this.state.enabled = this.waterToggle.checked
       this.applySimState()
       this.syncPill()
-      this.syncSceneNote()
       this.syncStatus()
       this.scheduleSave()
       this.options.toast(this.state.enabled ? '水体已开启' : '水体已关闭', 2000)
     })
+  }
 
+  /** 水源列表（选择 / 启用 / 删除）与选中水源的编辑控件。 */
+  private bindSourceControls(): void {
     this.sourceList.addEventListener('click', (event) => this.handleSourceListClick(event))
     this.sourceList.addEventListener('change', (event) => this.handleSourceListChange(event))
     this.sourceList.addEventListener('keydown', (event) => {
@@ -974,6 +1058,7 @@ export class WaterEditor {
       this.markers.setSources(this.state.sources, this.selectedId, this.projection)
       this.scheduleSave()
     })
+
     this.sourceRadius.addEventListener('input', () => {
       const source = this.selectedSource()
       if (!source) return
@@ -984,6 +1069,7 @@ export class WaterEditor {
       this.applySimState()
       this.scheduleSave()
     })
+
     this.sourceTarget.addEventListener('change', () => {
       const source = this.selectedSource()
       if (!source) return
@@ -995,6 +1081,7 @@ export class WaterEditor {
       this.applySimState()
       this.scheduleSave()
     })
+
     this.sourceEnabled.addEventListener('change', () => {
       const source = this.selectedSource()
       if (!source) return
@@ -1003,34 +1090,23 @@ export class WaterEditor {
       this.applySimState()
       this.scheduleSave()
     })
+
     this.sourceDelete.addEventListener('click', () => {
       if (this.selectedId) this.deleteSource(this.selectedId)
     })
+  }
 
-    type VisualKey = keyof WaterVisualSettings
-    const bindVisual = (
-      input: HTMLInputElement,
-      output: HTMLOutputElement,
-      key: VisualKey,
-      min: number,
-      max: number
-    ) => {
-      input.addEventListener('input', () => {
-        this.state.visual[key] = clamp(Number(input.value), min, max)
-        output.textContent = this.state.visual[key].toFixed(2)
+  /** 外观滑杆：绑定来自同一张 `visualControls` 表，取值同步走 `syncAppearance`。 */
+  private bindAppearanceControls(): void {
+    for (const control of this.visualControls) {
+      control.input.addEventListener('input', () => {
+        const value = clamp(Number(control.input.value), control.min, control.max)
+        this.state.visual[control.key] = value
+        control.output.textContent = value.toFixed(2)
         this.surface?.setVisual(this.state.visual)
         this.scheduleSave()
       })
     }
-
-    bindVisual(this.shimmerInput, this.shimmerValue, 'shimmer', 0, 3)
-    bindVisual(this.glintInput, this.glintValue, 'glint', 0.3, 2.5)
-    bindVisual(this.reflectionInput, this.reflectionValue, 'reflection', 0, 1.5)
-    bindVisual(this.rippleInput, this.rippleValue, 'ripple', 0, 2)
-    bindVisual(this.rippleScaleInput, this.rippleScaleValue, 'rippleScale', 0.4, 2.5)
-    bindVisual(this.flowSpeedInput, this.flowSpeedValue, 'flowSpeed', 0, 2)
-    bindVisual(this.foamInput, this.foamValue, 'foam', 0, 2)
-    bindVisual(this.clarityInput, this.clarityValue, 'clarity', 0, 1)
 
     this.appearanceReset.addEventListener('click', () => {
       this.state.visual = { ...VISUAL_DEFAULTS }
@@ -1039,13 +1115,18 @@ export class WaterEditor {
       this.scheduleSave()
       this.options.toast('水面外观已恢复默认', 2200)
     })
+  }
 
+  /** 工程保存 / 导出 / 导入。 */
+  private bindProjectControls(): void {
     this.saveButton.addEventListener('click', () => this.saveNow(true))
+
     this.exportButton.addEventListener('click', () => {
       downloadStateJson(this.state)
-      this.setProjectStatus('已导出工程 JSON')
+      this.setProjectStatus('已导出')
       this.options.toast('已导出水体工程 JSON', 2400)
     })
+
     this.importButton.addEventListener('click', () => this.importInput.click())
     this.importInput.addEventListener('change', () => {
       const file = this.importInput.files?.[0]
@@ -1053,9 +1134,6 @@ export class WaterEditor {
       void this.applyImportedFile(file)
       this.importInput.value = ''
     })
-
-    window.addEventListener('keydown', this.handleKeyDown)
-    this.attachPointerEvents()
   }
 
   private attachPointerEvents(): void {
@@ -1076,12 +1154,16 @@ export class WaterEditor {
     window.removeEventListener('keydown', this.handleKeyDown)
   }
 
+  /** 结束拖动：恢复相机手势与光标（拖动被取消 / 指针丢失时也走这里）。 */
+  private endDrag(): void {
+    if (!this.drag) return
+    this.drag = null
+    this.viewer.controls.enabled = true
+    this.canvas.style.cursor = this.placing ? 'crosshair' : ''
+  }
+
   private handleWindowBlur = (): void => {
-    if (this.drag) {
-      this.drag = null
-      this.viewer.controls.enabled = true
-      this.canvas.style.cursor = this.placing ? 'crosshair' : ''
-    }
+    this.endDrag()
     this.clickCandidate = null
   }
 
@@ -1127,19 +1209,13 @@ export class WaterEditor {
     if (this.drag && event.pointerId === this.drag.pointerId) {
       const source = this.state.sources.find((item) => item.id === this.drag?.id)
       if (source) {
-        const fieldGround = this.groundFromField(source.longitude, source.latitude)
-        source.groundLevel =
-          typeof fieldGround === 'number'
-            ? fieldGround
-            : (this.sampleGround(source.longitude, source.latitude) ?? source.groundLevel)
+        source.groundLevel = this.groundLevelAt(source.longitude, source.latitude) ?? source.groundLevel
         this.markers.settleSource(source)
         this.syncSourceEditor()
         this.syncSourceList()
         this.scheduleSave()
       }
-      this.drag = null
-      this.viewer.controls.enabled = true
-      this.canvas.style.cursor = this.placing ? 'crosshair' : ''
+      this.endDrag()
       return
     }
     if (this.clickCandidate && event.pointerId === this.clickCandidate.pointerId) {
@@ -1157,11 +1233,7 @@ export class WaterEditor {
   }
 
   private handlePointerCancel = (): void => {
-    if (this.drag) {
-      this.drag = null
-      this.viewer.controls.enabled = true
-      this.canvas.style.cursor = this.placing ? 'crosshair' : ''
-    }
+    this.endDrag()
     this.clickCandidate = null
   }
 
@@ -1209,9 +1281,7 @@ export class WaterEditor {
     if (!projection.contains(local.x, local.z, -Math.min(source.radius, 500))) return
     source.longitude = pick.longitude
     source.latitude = pick.latitude
-    const fieldGround = this.groundFromField(pick.longitude, pick.latitude)
-    source.groundLevel =
-      typeof fieldGround === 'number' ? fieldGround : pick.height
+    source.groundLevel = this.groundLevelAt(pick.longitude, pick.latitude) ?? pick.height
     this.markers.updateSource(source)
     this.syncSourceEditor()
     this.syncSourceList()
@@ -1243,13 +1313,28 @@ export class WaterEditor {
     }
     this.placing = true
     this.syncModeUI()
-    this.options.toast('单击地形放置水源 · Esc 结束放置', 2800)
+    this.syncPill()
+    this.options.toast('单击地形放置水源', 2400)
   }
 
   private exitPlacing(): void {
     if (!this.placing) return
     this.placing = false
     this.syncModeUI()
+    this.syncPill()
+  }
+
+  /** 按「水源 N」的占位顺序取下一个未占用的编号。 */
+  private nextSourceName(): string {
+    const used = new Set(
+      this.state.sources
+        .map((source) => /^水源\s*(\d+)$/.exec(source.name)?.[1])
+        .filter((value): value is string => Boolean(value))
+        .map(Number)
+    )
+    let index = 1
+    while (used.has(index)) index += 1
+    return `水源 ${index}`
   }
 
   private placeSource(longitude: number, latitude: number, groundLevel?: number): void {
@@ -1266,31 +1351,17 @@ export class WaterEditor {
         return
       }
     }
-    const fieldGround = this.groundFromField(longitude, latitude)
-    const ground =
-      typeof groundLevel === 'number' && Number.isFinite(groundLevel)
-        ? groundLevel
-        : typeof fieldGround === 'number'
-          ? fieldGround
-          : this.sampleGround(longitude, latitude)
-    const usedNumbers = new Set(
-      this.state.sources
-        .map((source) => /^水源\s*(\d+)$/.exec(source.name)?.[1])
-        .filter((value): value is string => Boolean(value))
-        .map(Number)
-    )
-    let index = 1
-    while (usedNumbers.has(index)) index += 1
+    const ground = this.groundLevelAt(longitude, latitude, groundLevel)
     const source: WaterSource = {
       id: createSourceId(),
-      name: `水源 ${index}`,
+      name: this.nextSourceName(),
       longitude,
       latitude,
       radius: 150,
-      targetLevel: typeof ground === 'number' ? Number((ground + 10).toFixed(2)) : null,
+      targetLevel: ground === null ? null : Number((ground + 10).toFixed(2)),
       amount: null,
       enabled: true,
-      groundLevel: typeof ground === 'number' ? ground : null
+      groundLevel: ground
     }
     this.state.sources.push(source)
     this.selectedId = source.id
@@ -1301,15 +1372,24 @@ export class WaterEditor {
     this.syncStatus()
     this.syncPill()
     this.scheduleSave()
+    this.revealSourceEditor()
     this.options.toast(`已放置「${source.name}」`, 2000)
     if (this.state.sources.length >= MAX_WATER_SOURCES) this.exitPlacing()
   }
 
   private selectSource(id: string | null): void {
+    const changed = this.selectedId !== id
     this.selectedId = id
     this.markers.setSelected(id)
     this.syncSourceList()
     this.syncSourceEditor()
+    if (changed && id) this.revealSourceEditor()
+  }
+
+  /** 选中水源后把编辑分组带到可视区（桌面已可见时不产生滚动）。 */
+  private revealSourceEditor(): void {
+    if (this.sourceEditor.hidden) return
+    this.sourceEditor.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
   }
 
   private selectedSource(): WaterSource | null {
@@ -1395,7 +1475,7 @@ export class WaterEditor {
       else await this.ensureDomain()
     }
     this.saveNow(false)
-    this.setProjectStatus('已导入工程 JSON')
+    this.setProjectStatus('已导入')
     this.options.toast('已导入水体工程', 3000)
   }
 
@@ -1411,6 +1491,8 @@ export class WaterEditor {
       const started = performance.now()
       this.sim.update(dt)
       this.statsSnapshot.simMs = performance.now() - started
+      // 模拟状态在两张纹理间 ping-pong：直接切换水面采样纹理，省掉一次全屏拷贝。
+      this.surface?.setStateTexture(this.sim.stateTexture)
       this.surface?.update(dt)
     }
     this.updateSun()
@@ -1423,7 +1505,6 @@ export class WaterEditor {
       this.lastStatsAt = now
       this.statsSnapshot = { ...this.statsSnapshot, ...this.sim.debugStats() }
       this.syncStatus()
-      this.syncSceneNote()
       this.syncPill()
     }
   }
@@ -1440,11 +1521,9 @@ export class WaterEditor {
   private saveNow(manual: boolean): void {
     window.clearTimeout(this.saveTimer)
     const ok = storeState(this.state)
+    this.setProjectStatus(ok ? '已保存' : '保存失败')
     if (manual) {
-      this.setProjectStatus(ok ? '已保存到本地' : '保存失败（本地存储不可用）')
       this.options.toast(ok ? '水体工程已保存' : '保存失败：本地存储不可用', 2200)
-    } else {
-      this.setProjectStatus(ok ? '已自动保存到本地' : '自动保存失败')
     }
   }
 

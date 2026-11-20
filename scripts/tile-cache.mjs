@@ -51,7 +51,10 @@ export function defaultCacheRoot(root) {
 export function regionBounds(region = DEFAULT_REGION) {
   const latRad = (region.latitude * Math.PI) / 180
   const mPerDegLat =
-    111132.92 - 559.82 * Math.cos(2 * latRad) + 1.175 * Math.cos(4 * latRad) - 0.0023 * Math.cos(6 * latRad)
+    111132.92 -
+    559.82 * Math.cos(2 * latRad) +
+    1.175 * Math.cos(4 * latRad) -
+    0.0023 * Math.cos(6 * latRad)
   const mPerDegLon =
     111412.84 * Math.cos(latRad) - 93.5 * Math.cos(3 * latRad) + 0.118 * Math.cos(5 * latRad)
   const halfLat = region.sizeMeters / 2 / mPerDegLat
@@ -270,24 +273,74 @@ export function createTileCache(options) {
     return buffer
   }
 
+  /**
+   * 统计目录内的瓦片数与字节数。
+   *
+   * `manifest.json` 只有 `cache:prefetch` 会写；按需缓存（浏览时回源写盘）没有清单，
+   * 此时直接数文件，避免启动日志 / `/tile-cache/stats` 误报 0 块。
+   */
+  const directoryUsage = (dir) => {
+    let tiles = 0
+    let bytes = 0
+    const walk = (current) => {
+      let entries
+      try {
+        entries = fs.readdirSync(current, { withFileTypes: true })
+      } catch {
+        return
+      }
+      for (const entry of entries) {
+        const full = path.join(current, entry.name)
+        if (entry.isDirectory()) {
+          walk(full)
+        } else if (entry.isFile()) {
+          tiles += 1
+          try {
+            bytes += fs.statSync(full).size
+          } catch {
+            // 单个文件读不到时只是少算字节数。
+          }
+        }
+      }
+    }
+    walk(dir)
+    return { tiles, bytes }
+  }
+
   const readStats = () => {
     const manifest = loadManifest()
+    const terrain = manifest.terrain?.tiles ? manifest.terrain : directoryUsage(terrainDir)
+    const imagery = manifest.imagery?.tiles ? manifest.imagery : directoryUsage(imageryDir)
     return {
       cacheDir,
       region: manifest.region ?? null,
-      terrain: manifest.terrain ?? { tiles: 0, bytes: 0 },
-      imagery: manifest.imagery ?? { tiles: 0, bytes: 0 },
+      terrain,
+      imagery,
       domain: { exists: fs.existsSync(domainFile), file: domainFile },
       updatedAt: manifest.updatedAt ?? null
     }
+  }
+
+  /** JSON 响应：统计接口与模拟域缓存接口共用。 */
+  const sendJson = (res, status, payload) => {
+    res.writeHead(status, {
+      'content-type': 'application/json; charset=utf-8',
+      'cache-control': 'no-store'
+    })
+    res.end(JSON.stringify(payload))
+  }
+
+  /** 影像缺块兜底：1×1 透明 PNG，避免浏览器报图层错误。 */
+  const sendTransparentPng = (res) => {
+    res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'no-store' })
+    res.end(TRANSPARENT_PNG)
   }
 
   /** 中间件主入口：命中返回 true，否则交给下一个处理者。 */
   const handle = async (req, res, url) => {
     const pathname = decodeURIComponent(url.pathname)
     if (pathname === '/tile-cache/stats') {
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
-      res.end(JSON.stringify(readStats()))
+      sendJson(res, 200, readStats())
       return true
     }
     // 固定模拟域地形高度场：GET 恢复 / POST 覆盖（与浏览器 localStorage 双向兜底）。
@@ -302,8 +355,7 @@ export function createTileCache(options) {
           res.end(buffer)
         } else {
           // 用 200 + missing 标记代替 404，避免浏览器控制台出现“资源 404”错误。
-          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
-          res.end(JSON.stringify({ missing: true }))
+          sendJson(res, 200, { missing: true })
         }
         return true
       }
@@ -312,23 +364,22 @@ export function createTileCache(options) {
           const body = await readRequestBody(req)
           const data = JSON.parse(body.toString('utf8'))
           if (!isValidDomainPayload(data)) {
-            res.writeHead(400, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
-            res.end(JSON.stringify({ error: 'invalid_domain_payload' }))
+            sendJson(res, 400, { error: 'invalid_domain_payload' })
             return true
           }
           await writeFileAtomic(domainFile, body)
-          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
-          res.end(JSON.stringify({ ok: true, savedAt: data.savedAt ?? null }))
+          sendJson(res, 200, { ok: true, savedAt: data.savedAt ?? null })
         } catch (error) {
-          res.writeHead(400, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
-          res.end(JSON.stringify({ error: 'domain_cache_write_failed', message: error.message }))
+          sendJson(res, 400, {
+            error: 'domain_cache_write_failed',
+            message: error.message
+          })
         }
         return true
       }
       if (req.method === 'DELETE') {
         await fsp.rm(domainFile, { force: true })
-        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
-        res.end(JSON.stringify({ ok: true }))
+        sendJson(res, 200, { ok: true })
         return true
       }
       res.writeHead(405, { allow: 'GET, HEAD, POST, PUT, DELETE' })
@@ -345,8 +396,7 @@ export function createTileCache(options) {
         res.end(layer)
       } catch (error) {
         logger.warn?.(`[tile-cache] layer.json 不可用：${error.message}`)
-        res.writeHead(503, { 'content-type': 'application/json; charset=utf-8' })
-        res.end(JSON.stringify({ error: 'terrain_cache_unavailable', message: error.message }))
+        sendJson(res, 503, { error: 'terrain_cache_unavailable', message: error.message })
       }
       return true
     }
@@ -370,8 +420,7 @@ export function createTileCache(options) {
         }
       } catch (error) {
         logger.warn?.(`[tile-cache] 地形瓦片 ${z}/${x}/${y} 回源失败：${error.message}`)
-        res.writeHead(503, { 'content-type': 'application/json; charset=utf-8' })
-        res.end(JSON.stringify({ error: 'terrain_tile_unavailable' }))
+        sendJson(res, 503, { error: 'terrain_tile_unavailable' })
       }
       return true
     }
@@ -389,13 +438,11 @@ export function createTileCache(options) {
           })
           res.end(tile)
         } else {
-          res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'no-store' })
-          res.end(TRANSPARENT_PNG)
+          sendTransparentPng(res)
         }
       } catch (error) {
         logger.warn?.(`[tile-cache] 影像瓦片 ${z}/${y}/${x} 回源失败：${error.message}`)
-        res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'no-store' })
-        res.end(TRANSPARENT_PNG)
+        sendTransparentPng(res)
       }
       return true
     }
@@ -483,9 +530,6 @@ export async function prefetchRegion(options = {}) {
     onProgress({ completed, total, downloaded, skipped, failed, bytes })
   }
 
-  const terrainSet = new Set(terrainTasks.map((task) => `${task.level}/${task.x}/${task.y}`))
-  const imagerySet = new Set(imageryTasks.map((task) => `${task.level}/${task.y}/${task.x}`))
-
   await runPool(terrainTasks, concurrency, async (task) => {
     const filePath = path.join(terrainDir, String(task.level), String(task.x), `${task.y}.terrain`)
     if (await fileExists(filePath)) {
@@ -553,8 +597,19 @@ export async function prefetchRegion(options = {}) {
     sources: { terrain: 'Cesium World Terrain (Cesium Ion)', imagery: 'ArcGIS World Imagery' },
     updatedAt: new Date().toISOString()
   }
-  await writeFileAtomic(path.join(cacheDir, 'manifest.json'), Buffer.from(JSON.stringify(manifest, null, 2)))
-  return { manifest, terrainTasks: terrainSet.size, imageryTasks: imagerySet.size, downloaded, skipped, failed, bytes }
+  await writeFileAtomic(
+    path.join(cacheDir, 'manifest.json'),
+    Buffer.from(JSON.stringify(manifest, null, 2))
+  )
+  return {
+    manifest,
+    terrainTasks: terrainTasks.length,
+    imageryTasks: imageryTasks.length,
+    downloaded,
+    skipped,
+    failed,
+    bytes
+  }
 }
 
 async function directoryStats(dir) {

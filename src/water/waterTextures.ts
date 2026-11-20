@@ -95,7 +95,7 @@ function createRepeatingTexture(
   return texture
 }
 
-export interface WaterNormalTextureOptions {
+interface WaterNormalTextureOptions {
   /** 纹理边长，默认 256。 */
   size?: number
   /** 基础值噪声格点数（整数），越大细节越密。 */
@@ -114,9 +114,7 @@ export interface WaterNormalTextureOptions {
  * 高度场由多八度值噪声叠加，法线取中心差分；纹理可 RepeatWrapping + mipmap，
  * anisotropy 会在上传时被渲染器裁剪到硬件上限。
  */
-export function createWaterNormalTexture(
-  options: WaterNormalTextureOptions = {}
-): THREE.DataTexture {
+function createWaterNormalTexture(options: WaterNormalTextureOptions = {}): THREE.DataTexture {
   const size = Math.max(64, Math.floor(options.size ?? 256))
   const frequency = Math.max(2, Math.floor(options.frequency ?? 8))
   const octaves = Math.max(1, Math.floor(options.octaves ?? 4))
@@ -167,7 +165,7 @@ export function createWaterNormalTexture(
  *
  * R：低频团块（岸线泡沫），G：中频碎裂（急流白浪），B：高频细节。
  */
-export function createWaterFoamTexture(size = 256): THREE.DataTexture {
+function createWaterFoamTexture(size = 256): THREE.DataTexture {
   const resolution = Math.max(64, Math.floor(size))
   const data = new Uint8Array(resolution * resolution * 4)
   for (let y = 0; y < resolution; y += 1) {

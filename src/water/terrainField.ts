@@ -1,5 +1,6 @@
 import type { LonLat, SimTerrain, TerrainField } from './types'
 import { TERRAIN_GRID_SIZE } from './types'
+import { nextFrame } from './async'
 
 /**
  * 模拟域的切平面近似投影。
@@ -51,12 +52,6 @@ export function createLocalProjection(origin: LonLat, sizeMeters: number): Local
     }
   }
 }
-
-const nextFrame = (): Promise<void> =>
-  new Promise((resolve) => {
-    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => resolve())
-    else setTimeout(resolve, 0)
-  })
 
 export interface TerrainSampleOptions {
   projection: LocalProjection

@@ -389,16 +389,14 @@ export class SourceMarkers {
       return
     }
     if (token !== this.drapeToken) return
-    const groundLevel =
-      source.groundLevel ?? heights.find((height) => typeof height === 'number')
-    if (!Number.isFinite(groundLevel ?? Number.NaN)) return
+    const firstHit = heights.find((height) => typeof height === 'number')
+    const groundLevel = source.groundLevel ?? firstHit
+    if (typeof groundLevel !== 'number' || !Number.isFinite(groundLevel)) return
     const centerline = new Float32Array(RING_SEGMENTS * 3)
     for (let i = 0; i < RING_SEGMENTS; i++) {
       const angle = (i / RING_SEGMENTS) * Math.PI * 2
-      const height = heights[i]
       centerline[i * 3] = Math.cos(angle) * source.radius
-      centerline[i * 3 + 1] =
-        (height ?? (groundLevel as number)) - (groundLevel as number) + 2.2
+      centerline[i * 3 + 1] = (heights[i] ?? groundLevel) - groundLevel + 2.2
       centerline[i * 3 + 2] = Math.sin(angle) * source.radius
     }
     visual.ring.setCenterline(centerline)
@@ -444,6 +442,8 @@ export class DomainBoundary {
   private readonly ribbon: RibbonLine
   private readonly perEdge = 64
   private readonly centerline = new Float32Array(this.perEdge * 4 * 3)
+  /** 复用向量，避免每帧分配。 */
+  private readonly worldCenter = new THREE.Vector3()
   private visible = false
   private token = 0
 
@@ -465,7 +465,9 @@ export class DomainBoundary {
   /** 每帧按相机距离更新屏幕像素宽度。 */
   update(camera: THREE.PerspectiveCamera, viewportHeight: number): void {
     if (!this.visible || viewportHeight <= 0) return
-    const distance = camera.position.distanceTo(this.ribbon.mesh.getWorldPosition(new THREE.Vector3()))
+    const distance = camera.position.distanceTo(
+      this.ribbon.mesh.getWorldPosition(this.worldCenter)
+    )
     const focal = viewportHeight / 2 / Math.tan(((camera.fov * Math.PI) / 180) / 2)
     this.ribbon.setWidth((RIBBON_PIXEL_WIDTH * distance) / focal)
   }

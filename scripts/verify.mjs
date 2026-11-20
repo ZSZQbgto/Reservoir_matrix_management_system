@@ -244,6 +244,7 @@ async function main() {
       assert(clouds.haze === false, '薄雾未关闭')
       assert(clouds.shadow === 'high', `云影质量未生效：${clouds.shadow}`)
       await page.screenshot({ path: join(outDir, 'clouds-detail.png') })
+
       // 保留一组可区分的持久化值并关闭云层，供刷新恢复测试使用。
       await page.evaluate(() => {
         const setRange = (selector, value) => {
@@ -266,6 +267,67 @@ async function main() {
         setChecked('#cloud-haze', true)
         setChecked('#cloud-light-shafts', true)
         setChecked('#clouds-toggle', false)
+      })
+    })
+
+    await check('体积云数值调参（含质量预设重放）', async () => {
+      const hasEffect = await page.evaluate(() => Boolean(window.viewer.atmosphere?.cloudsEffect))
+      assert(hasEffect, '取不到 CloudsEffect，Tellux 内部结构可能已变化')
+      await page.evaluate(() => {
+        const setRange = (selector, value) => {
+          const input = document.querySelector(selector)
+          input.value = String(value)
+          input.dispatchEvent(new Event('input', { bubbles: true }))
+        }
+        setRange('#cloud-min-step', 80)
+        setRange('#cloud-iterations', 260)
+        setRange('#cloud-sun-iterations', 1)
+        setRange('#cloud-scattering', 1.4)
+        setRange('#cloud-absorption', 0.1)
+        setRange('#cloud-turbulence', 500)
+      })
+      const tuned = await page.evaluate(() => {
+        const effect = window.viewer.atmosphere.cloudsEffect
+        return {
+          minStep: effect.clouds.minStepSize,
+          iterations: effect.clouds.maxIterationCount,
+          sunIterations: effect.clouds.maxIterationCountToSun,
+          scattering: effect.scatteringCoefficient,
+          absorption: effect.absorptionCoefficient,
+          turbulence: effect.turbulenceDisplacement
+        }
+      })
+      assert(Math.abs(tuned.minStep - 80) < 1e-6, `最小步长未生效：${tuned.minStep}`)
+      assert(tuned.iterations === 260, `主步进上限未生效：${tuned.iterations}`)
+      assert(tuned.sunIterations === 1, `太阳步进上限未生效：${tuned.sunIterations}`)
+      assert(Math.abs(tuned.scattering - 1.4) < 1e-6, `散射强度未生效：${tuned.scattering}`)
+      assert(Math.abs(tuned.absorption - 0.1) < 1e-6, `吸收强度未生效：${tuned.absorption}`)
+      assert(Math.abs(tuned.turbulence - 500) < 1e-6, `湍流位移未生效：${tuned.turbulence}`)
+
+      // 改变云量会触发质量预设重套；自定义数值应被重放而不是被预设覆盖。
+      await page.evaluate(() => {
+        const input = document.querySelector('#coverage')
+        input.value = '56'
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      const replayed = await page.evaluate(
+        () => window.viewer.atmosphere.cloudsEffect.clouds.minStepSize
+      )
+      assert(Math.abs(replayed - 80) < 1e-6, `云量变化后自定义最小步长被质量预设覆盖：${replayed}`)
+      // 还原调参，避免影响后续断言。
+      await page.evaluate(() => {
+        const setRange = (selector, value) => {
+          const input = document.querySelector(selector)
+          input.value = String(value)
+          input.dispatchEvent(new Event('input', { bubbles: true }))
+        }
+        setRange('#cloud-min-step', 60)
+        setRange('#cloud-iterations', 400)
+        setRange('#cloud-sun-iterations', 2)
+        setRange('#cloud-scattering', 1)
+        setRange('#cloud-absorption', 0)
+        setRange('#cloud-turbulence', 350)
+        setRange('#coverage', 62)
       })
     })
 
@@ -322,7 +384,7 @@ async function main() {
       await check('用鼠标在地形上放置水源', async () => {
         await page.click('#water-add-source')
         await page.waitForFunction(
-          "document.querySelector('#water-place-banner').hidden === false",
+          "document.body.dataset.placing === 'true'",
           { timeout: 5000 }
         )
         const point = await page.evaluate(() => {
@@ -413,6 +475,13 @@ async function main() {
         assert(Math.abs(visual.foam - 1.6) < 0.001, `泡沫强度未更新：${visual.foam}`)
         assert(Math.abs(visual.clarity - 0.4) < 0.001, `清澈度未更新：${visual.clarity}`)
         await page.screenshot({ path: join(outDir, 'water-appearance-tuned.png') })
+        await page.evaluate(() => {
+          const input = document.querySelector('#water-opacity')
+          input.value = '0.75'
+          input.dispatchEvent(new Event('input', { bubbles: true }))
+        })
+        const opacity = await page.evaluate(() => window.__waterEditor.getState().visual.opacity)
+        assert(Math.abs(opacity - 0.75) < 0.001, `水面不透明度未更新：${opacity}`)
         await page.click('#water-appearance-reset')
         await page.waitForTimeout(300)
         const reset = await page.evaluate(() => window.__waterEditor.getState().visual)
@@ -424,20 +493,48 @@ async function main() {
         assert(Math.abs(reset.flowSpeed - 1) < 0.001, `恢复默认失败：flowSpeed=${reset.flowSpeed}`)
         assert(Math.abs(reset.foam - 1) < 0.001, `恢复默认失败：foam=${reset.foam}`)
         assert(Math.abs(reset.clarity - 0.62) < 0.001, `恢复默认失败：clarity=${reset.clarity}`)
+        assert(reset.opacity === 0, `恢复默认失败：opacity=${reset.opacity}`)
       })
 
-      await check('模拟速度上限 32×', async () => {
+      await check('模拟速度上限 64×', async () => {
         await page.evaluate(() => {
           const input = document.querySelector('#water-speed')
-          input.value = '32'
+          input.value = '64'
           input.dispatchEvent(new Event('input', { bubbles: true }))
         })
         const speed = await page.evaluate(() => window.__waterEditor.getState().sim.speed)
-        assert(Math.abs(speed - 32) < 1e-6, `模拟速度未到 32×：${speed}`)
+        assert(Math.abs(speed - 64) < 1e-6, `模拟速度未到 64×：${speed}`)
         await page.evaluate(() => {
           const input = document.querySelector('#water-speed')
           input.value = '1'
           input.dispatchEvent(new Event('input', { bubbles: true }))
+        })
+      })
+
+      await check('水流数值调参', async () => {
+        await page.evaluate(() => {
+          const setRange = (selector, value) => {
+            const input = document.querySelector(selector)
+            input.value = String(value)
+            input.dispatchEvent(new Event('input', { bubbles: true }))
+          }
+          setRange('#water-max-flow-speed', 45)
+          setRange('#water-damping', 0.95)
+          setRange('#water-inject-interval', 3)
+        })
+        const sim = await page.evaluate(() => window.__waterEditor.getState().sim)
+        assert(sim.maxFlowSpeed === 45, `最大流速未生效：${sim.maxFlowSpeed}`)
+        assert(Math.abs(sim.damping - 0.95) < 1e-6, `流动阻尼未生效：${sim.damping}`)
+        assert(sim.injectInterval === 3, `注水间隔未生效：${sim.injectInterval}`)
+        await page.evaluate(() => {
+          const setRange = (selector, value) => {
+            const input = document.querySelector(selector)
+            input.value = String(value)
+            input.dispatchEvent(new Event('input', { bubbles: true }))
+          }
+          setRange('#water-max-flow-speed', 30)
+          setRange('#water-damping', 0.995)
+          setRange('#water-inject-interval', 2)
         })
       })
 
@@ -494,7 +591,7 @@ async function main() {
       await check('持久化与刷新恢复', async () => {
         await page.click('#water-add-source')
         await page.waitForFunction(
-          "document.querySelector('#water-place-banner').hidden === false",
+          "document.body.dataset.placing === 'true'",
           { timeout: 5000 }
         )
         const point = await page.evaluate(() => {

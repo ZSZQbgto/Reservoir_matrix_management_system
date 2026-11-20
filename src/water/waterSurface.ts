@@ -17,7 +17,7 @@
 import * as THREE from 'three'
 import type { Viewer } from 'tellux'
 import type { SurfaceDomain, WaterVisualSettings } from './types'
-import { VISUAL_DEFAULTS } from './types'
+import { VISUAL_DEFAULTS, clamp } from './types'
 import { WATER_FRAGMENT_SHADER, WATER_VERTEX_SHADER } from './waterShaders'
 import {
   createWaterDetailTextures,
@@ -37,9 +37,6 @@ const SURFACE_LIFT = 0.42
 const DEFAULT_SUN_ENU = new THREE.Vector3(0.28, 0.6, 0.75)
 /** 单帧最大推进时间，避免切页/卡顿导致波纹瞬间跳变。 */
 const MAX_STEP_SECONDS = 0.1
-
-const clamp = (value: number, min: number, max: number): number =>
-  Math.min(max, Math.max(min, value))
 
 function resolveSegments(sizeMeters: number): number {
   const desired = Math.round(sizeMeters / TARGET_SPACING)
@@ -114,7 +111,6 @@ export class WaterSurface {
   /** 场景中的水面网格（已加入 `viewer.scene.raw`）。 */
   readonly mesh: THREE.Mesh
 
-  private readonly viewer: Viewer
   private readonly domain: SurfaceDomain
   private readonly material: THREE.ShaderMaterial
   private readonly geometry: THREE.BufferGeometry
@@ -144,7 +140,6 @@ export class WaterSurface {
     stateTexture: THREE.Texture,
     simResolution: number
   ) {
-    this.viewer = viewer
     this.domain = { ...domain, origin: { ...domain.origin } }
     this.simResolution = Math.max(2, Math.floor(simResolution) || 256)
     this.segments = resolveSegments(domain.sizeMeters)
@@ -169,6 +164,7 @@ export class WaterSurface {
       uFlowSpeed: { value: this.visual.flowSpeed },
       uFoam: { value: this.visual.foam },
       uClarity: { value: this.visual.clarity },
+      uOpacity: { value: this.visual.opacity },
       uSunLocal: { value: this.sunLocalUniform },
       uSunColor: { value: this.sunColor },
       uSkyZenith: { value: this.skyZenith },
@@ -231,6 +227,12 @@ export class WaterSurface {
     this.mesh.visible = this.enabled
   }
 
+  /** 切换到当前模拟状态纹理（模拟器 ping-pong 时每帧调用，避免额外拷贝 pass）。 */
+  setStateTexture(texture: THREE.Texture): void {
+    if (this.disposed) return
+    this.uniforms.uStateTexture.value = texture
+  }
+
   /** 设置外观参数；越界值会被裁剪到契约范围。 */
   setVisual(visual: WaterVisualSettings): void {
     if (this.disposed) return
@@ -242,7 +244,8 @@ export class WaterSurface {
       rippleScale: clamp(visual.rippleScale ?? VISUAL_DEFAULTS.rippleScale, 0.4, 2.5),
       flowSpeed: clamp(visual.flowSpeed ?? VISUAL_DEFAULTS.flowSpeed, 0, 2),
       foam: clamp(visual.foam ?? VISUAL_DEFAULTS.foam, 0, 2),
-      clarity: clamp(visual.clarity, 0, 1)
+      clarity: clamp(visual.clarity, 0, 1),
+      opacity: clamp(visual.opacity ?? VISUAL_DEFAULTS.opacity, 0, 1)
     }
     this.uniforms.uShimmer.value = this.visual.shimmer
     this.uniforms.uGlint.value = this.visual.glint
@@ -252,6 +255,7 @@ export class WaterSurface {
     this.uniforms.uFlowSpeed.value = this.visual.flowSpeed
     this.uniforms.uFoam.value = this.visual.foam
     this.uniforms.uClarity.value = this.visual.clarity
+    this.uniforms.uOpacity.value = this.visual.opacity
   }
 
   /** 设置太阳方向：单位向量，分量顺序 [east, up, north]。 */

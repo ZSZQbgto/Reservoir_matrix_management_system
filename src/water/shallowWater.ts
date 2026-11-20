@@ -1,7 +1,8 @@
 import * as THREE from 'three'
 import type { SimSettings, SimSource, SimStats, SimTerrain } from './types'
+import { clamp, toFiniteNumber } from './types'
+import { sampleFieldHeight } from './terrainField'
 import {
-  COPY_FRAGMENT,
   DEPTH_FRAGMENT,
   FLUX_FRAGMENT,
   FULLSCREEN_VERTEX,
@@ -14,33 +15,45 @@ import {
  *
  * 每个子步两个全屏 pass（ping-pong RGBA32F）：
  * 1. 通量 pass：由水面高程差算出四邻域出流（m³/s），按可用水量整体缩放；
+ *    域边界按开放吸收边界处理，水流出域外即被吸收；
  * 2. 深度 / 速度 pass：加总邻居入流更新水深，处理注水与全局水位上限，
  *    再由净通量换算速度场。
  *
- * 对外 `stateTexture` 是每个 update 末尾拷贝出来的展示纹理（身份稳定），
- * 模拟本身使用 NearestFilter 的 ping-pong 目标，避免插值污染数值。
+ * 对外 `stateTexture` 直接指向当前 ping-pong 状态纹理，水面层每帧跟随；
+ * 不再做额外的全分辨率拷贝 pass。状态纹理使用 NearestFilter，数值读取一律
+ * texelFetch（水面着色器自己做双线性），因此插值不会污染模拟。
  *
  * 坐标约定见 `src/water/types.ts`。
  */
 
-/** 1x 速度下每个子步代表的固定时间（60Hz）。 */
-const SUBSTEP_SECONDS = 1 / 60
-/** 单次 update 最多推进的子步数（支持 32× 加速，同时防止掉帧时补跑过多）。 */
+/**
+ * 1x 速度下每个子步代表的模拟时间（1/30 s）。
+ *
+ * 相比旧的 1/60 s，每个子步覆盖两倍模拟时间：同样观感下每秒子步数减半、
+ * GPU pass 数减半；保持与旧版相同的每帧开销时则可推进两倍模拟时间。
+ * 稳定性由通量 pass 里含 uDt 的 CFL 缩放自动保证。
+ */
+const SUBSTEP_SECONDS = 1 / 30
+/** 界面参数的参考时间基准：注水间隔等仍以 1/60 s 为一“步”。 */
+const REFERENCE_SUBSTEP_SECONDS = 1 / 60
+/** 单次 update 最多推进的子步数（64 子步 × 1/30 s ≈ 2.1 s 模拟时间）。 */
 const MAX_SUBSTEPS_PER_UPDATE = 64
 /** 单帧传入 dt 的上限（秒）。 */
 const MAX_FRAME_DT = 0.1
 const MAX_SOURCE_COUNT = 8
 const GRAVITY = 9.81
-/** 通量方向的最大虚拟流速（m/s）。 */
-const MAX_FLOW_SPEED = 30
-/** 通量轻微阻尼，帮助静水收敛。 */
-const FLOW_DAMPING = 0.995
+/** 默认通量方向最大虚拟流速（m/s），可由 SimSettings.maxFlowSpeed 覆盖。 */
+const DEFAULT_MAX_FLOW_SPEED = 30
+/** 默认通量阻尼，帮助静水收敛，可由 SimSettings.damping 覆盖。 */
+const DEFAULT_FLOW_DAMPING = 0.995
+/** 默认每 2 个 1/60 s 参考步长注水一次，可由 SimSettings.injectInterval 覆盖。 */
+const DEFAULT_INJECT_INTERVAL = 2
 /** 水深安全上限（m），避免极端注水下数值溢出。 */
 const MAX_DEPTH = 20_000
 /** 统计降采样的块边长（每块 4x4 模拟格）。 */
 const STATS_BLOCK = 4
-/** 统计读回的最小间隔（ms）。 */
-const STATS_MIN_INTERVAL_MS = 400
+/** 统计读回的最小间隔（ms），与面板 700 ms 的刷新节奏对齐，减少 GPU 同步等待。 */
+const STATS_MIN_INTERVAL_MS = 700
 
 type StatsArray = Float32Array | Uint16Array
 
@@ -56,7 +69,6 @@ export class ShallowWaterSim {
 
   private readonly stateTargets: [THREE.WebGLRenderTarget, THREE.WebGLRenderTarget]
   private readonly fluxTarget: THREE.WebGLRenderTarget
-  private readonly presentTarget: THREE.WebGLRenderTarget
   private readonly statsTarget: THREE.WebGLRenderTarget
   private readonly statsSize: number
   private readonly terrainTexture: THREE.DataTexture
@@ -68,14 +80,22 @@ export class ShallowWaterSim {
   private readonly initMaterial: THREE.ShaderMaterial
   private readonly fluxMaterial: THREE.ShaderMaterial
   private readonly depthMaterial: THREE.ShaderMaterial
-  private readonly copyMaterial: THREE.ShaderMaterial
   private readonly statsMaterial: THREE.ShaderMaterial
 
   private sources: SimSource[] = []
-  private settings: SimSettings = { speed: 1, paused: false, waterAmount: 15 }
+  private settings: SimSettings = {
+    speed: 1,
+    paused: false,
+    waterAmount: 15,
+    maxFlowSpeed: DEFAULT_MAX_FLOW_SPEED,
+    damping: DEFAULT_FLOW_DAMPING,
+    injectInterval: DEFAULT_INJECT_INTERVAL
+  }
   private stateIndex = 0
   private steps = 0
   private accumulator = 0
+  /** 距上次注水累积的模拟秒数（按模拟时间触发，不受子步 dt 影响）。 */
+  private injectClock = 0
   private lastSimMs = 0
   private statsStale = true
   private lastStatsAt = Number.NEGATIVE_INFINITY
@@ -132,22 +152,11 @@ export class ShallowWaterSim {
       colorSpace: THREE.NoColorSpace
     }
 
-    // 展示纹理允许线性过滤，让水面渲染更平滑（浮点线性过滤缺失时退回最近邻）。
-    const linearSupported = floatSupported
-      ? renderer.extensions.has('OES_texture_float_linear')
-      : true
-    const presentOptions: THREE.RenderTargetOptions = {
-      ...targetOptions,
-      minFilter: linearSupported ? THREE.LinearFilter : THREE.NearestFilter,
-      magFilter: linearSupported ? THREE.LinearFilter : THREE.NearestFilter
-    }
-
     this.stateTargets = [
       new THREE.WebGLRenderTarget(resolution, resolution, targetOptions),
       new THREE.WebGLRenderTarget(resolution, resolution, targetOptions)
     ]
     this.fluxTarget = new THREE.WebGLRenderTarget(resolution, resolution, targetOptions)
-    this.presentTarget = new THREE.WebGLRenderTarget(resolution, resolution, presentOptions)
     this.statsSize = Math.ceil(resolution / STATS_BLOCK)
     this.statsTarget = new THREE.WebGLRenderTarget(this.statsSize, this.statsSize, targetOptions)
 
@@ -185,8 +194,11 @@ export class ShallowWaterSim {
       uCellWidth: { value: this.cellWidth },
       uDt: { value: SUBSTEP_SECONDS },
       uGravity: { value: GRAVITY },
-      uMaxFlowSpeed: { value: MAX_FLOW_SPEED },
-      uDamping: { value: FLOW_DAMPING }
+      uMaxFlowSpeed: { value: this.settings.maxFlowSpeed },
+      // 初始值同样按子步时间补偿；setSettings 会再写一次。
+      uDamping: {
+        value: Math.pow(this.settings.damping, SUBSTEP_SECONDS / REFERENCE_SUBSTEP_SECONDS)
+      }
     })
     this.depthMaterial = this.createMaterial(DEPTH_FRAGMENT, {
       uState: { value: null },
@@ -204,11 +216,9 @@ export class ShallowWaterSim {
       uCapRel: { value: 0 },
       uMaxDepth: { value: MAX_DEPTH }
     })
-    this.copyMaterial = this.createMaterial(COPY_FRAGMENT, {
-      uState: { value: null }
-    })
     this.statsMaterial = this.createMaterial(STATS_FRAGMENT, {
-      uState: { value: this.presentTarget.texture },
+      // 每次读回统计前绑定当前 ping-pong 状态纹理。
+      uState: { value: null },
       uResolution: { value: resolution },
       uOutSize: { value: this.statsSize },
       uBlock: { value: STATS_BLOCK }
@@ -223,12 +233,12 @@ export class ShallowWaterSim {
   }
 
   /**
-   * 对外展示的模拟状态纹理（RGBA32F；不支持浮点颜色缓冲时为 HalfFloat）。
+   * 当前 ping-pong 状态纹理（RGBA32F；不支持浮点颜色缓冲时为 HalfFloat）。
    * R = 水深 m，G = 东向速度 m/s，B = 北向速度 m/s，A = 相对 baseElevation 地形高程 m。
-   * 每次 update 结束后内容刷新，纹理对象身份保持不变。
+   * 每个子步会在两张纹理之间交换，水面层每帧通过 `setStateTexture` 跟随。
    */
   get stateTexture(): THREE.Texture {
-    return this.presentTarget.texture
+    return this.stateTargets[this.stateIndex].texture
   }
 
   setSources(sources: SimSource[]): void {
@@ -262,11 +272,24 @@ export class ShallowWaterSim {
   setSettings(settings: SimSettings): void {
     if (this.disposed || !settings) return
     this.settings = {
-      speed: clamp(toFiniteNumber(settings.speed) ?? 1, 0.1, 32),
+      speed: clamp(toFiniteNumber(settings.speed) ?? 1, 0.1, 64),
       paused: settings.paused === true,
-      waterAmount: clamp(toFiniteNumber(settings.waterAmount) ?? 15, 1, 300)
+      waterAmount: clamp(toFiniteNumber(settings.waterAmount) ?? 15, 1, 300),
+      maxFlowSpeed: clamp(
+        toFiniteNumber(settings.maxFlowSpeed) ?? DEFAULT_MAX_FLOW_SPEED,
+        5,
+        60
+      ),
+      damping: clamp(toFiniteNumber(settings.damping) ?? DEFAULT_FLOW_DAMPING, 0.9, 1),
+      injectInterval: Math.round(
+        clamp(toFiniteNumber(settings.injectInterval) ?? DEFAULT_INJECT_INTERVAL, 1, 8)
+      )
     }
     this.depthMaterial.uniforms.uFallbackAmount.value = this.settings.waterAmount
+    this.fluxMaterial.uniforms.uMaxFlowSpeed.value = this.settings.maxFlowSpeed
+    // 面板阻尼以 1/60 s 为参考；当前子步更长，按幂次换算保持每秒衰减不变。
+    const dampingRatio = SUBSTEP_SECONDS / REFERENCE_SUBSTEP_SECONDS
+    this.fluxMaterial.uniforms.uDamping.value = Math.pow(this.settings.damping, dampingRatio)
     if (this.settings.paused) this.accumulator = 0
   }
 
@@ -281,14 +304,17 @@ export class ShallowWaterSim {
     const clampedDt = Math.min(Math.max(frameDt, 0), MAX_FRAME_DT)
     if (clampedDt <= 0) return
 
-    // 以秒为单位累积；1x 速度下 60Hz 每帧恰好 1 子步（用 1e-6 s 容差抵消浮点误差）。
+    // 以秒为单位累积；1x 速度下每秒 30 个子步（每个 1/30 s）。
     this.accumulator += clampedDt * this.settings.speed
     let substeps = Math.floor((this.accumulator + 1e-6) / SUBSTEP_SECONDS)
     if (substeps <= 0) return
     if (substeps > MAX_SUBSTEPS_PER_UPDATE) substeps = MAX_SUBSTEPS_PER_UPDATE
     this.accumulator = Math.max(
       0,
-      Math.min(this.accumulator - substeps * SUBSTEP_SECONDS, MAX_SUBSTEPS_PER_UPDATE * SUBSTEP_SECONDS)
+      Math.min(
+        this.accumulator - substeps * SUBSTEP_SECONDS,
+        MAX_SUBSTEPS_PER_UPDATE * SUBSTEP_SECONDS
+      )
     )
 
     const start = performance.now()
@@ -297,9 +323,6 @@ export class ShallowWaterSim {
     this.renderer.autoClear = false
     try {
       for (let i = 0; i < substeps; i++) this.step()
-      const copy = this.copyMaterial.uniforms
-      copy.uState.value = this.stateTargets[this.stateIndex].texture
-      this.renderPass(this.copyMaterial, this.presentTarget)
     } finally {
       this.renderer.autoClear = previousAutoClear
       this.renderer.setRenderTarget(previousTarget)
@@ -313,6 +336,7 @@ export class ShallowWaterSim {
     this.initializeState()
     this.steps = 0
     this.accumulator = 0
+    this.injectClock = 0
     this.lastSimMs = 0
     this.cachedWetCells = 0
     this.cachedMaxDepth = 0
@@ -343,13 +367,11 @@ export class ShallowWaterSim {
     this.stateTargets[0].dispose()
     this.stateTargets[1].dispose()
     this.fluxTarget.dispose()
-    this.presentTarget.dispose()
     this.statsTarget.dispose()
     this.terrainTexture.dispose()
     this.initMaterial.dispose()
     this.fluxMaterial.dispose()
     this.depthMaterial.dispose()
-    this.copyMaterial.dispose()
     this.statsMaterial.dispose()
     this.geometry.dispose()
     this.statsBuffer = null
@@ -377,7 +399,7 @@ export class ShallowWaterSim {
     })
   }
 
-  /** 用 init pass 把地形写进 A 通道、水深清零，再同步展示纹理。 */
+  /** 用 init pass 把地形写进 A 通道、水深清零。 */
   private initializeState(): void {
     const previousTarget = this.renderer.getRenderTarget()
     const previousAutoClear = this.renderer.autoClear
@@ -385,9 +407,6 @@ export class ShallowWaterSim {
     try {
       this.stateIndex = 0
       this.renderPass(this.initMaterial, this.stateTargets[0])
-      this.quad.material = this.copyMaterial
-      this.copyMaterial.uniforms.uState.value = this.stateTargets[0].texture
-      this.renderPass(this.copyMaterial, this.presentTarget)
     } finally {
       this.renderer.autoClear = previousAutoClear
       this.renderer.setRenderTarget(previousTarget)
@@ -404,7 +423,7 @@ export class ShallowWaterSim {
 
   private step(): void {
     this.steps += 1
-    const inject = this.steps % 2 === 1
+    const inject = this.tickInjection()
     const readTarget = this.stateTargets[this.stateIndex]
     const writeTarget = this.stateTargets[1 - this.stateIndex]
 
@@ -419,6 +438,20 @@ export class ShallowWaterSim {
     this.renderPass(this.depthMaterial, writeTarget)
 
     this.stateIndex = 1 - this.stateIndex
+  }
+
+  /**
+   * 按模拟时间决定本子步是否注水。
+   *
+   * `injectInterval` 以 1/60 s 为单位，换算成秒后与子步 dt 无关，
+   * 因此把子步从 1/60 s 改成 1/30 s 后每模拟秒的注水次数保持不变。
+   */
+  private tickInjection(): boolean {
+    const intervalSeconds = this.settings.injectInterval * REFERENCE_SUBSTEP_SECONDS
+    this.injectClock += SUBSTEP_SECONDS
+    if (this.injectClock + 1e-9 < intervalSeconds) return false
+    this.injectClock = Math.max(0, this.injectClock - intervalSeconds)
+    return true
   }
 
   /** 把水源参数写成 uniform；同时推导全局水位上限。 */
@@ -448,7 +481,7 @@ export class ShallowWaterSim {
         hasUnbounded = true
         // 「不限制目标水位」不代表可以无限注水：用「水源处地形 + 每次注水量」
         // 作为本地压力水头，注满后停止、水排走后再补充，避免数秒灌到千米级。
-        const terrainRel = this.terrainRelativeAt(source.x, source.z)
+        const terrainRel = sampleFieldHeight(this.terrain, source.x, source.z)
         uniformTarget.set(terrainRel + Math.max(source.amount, 0.5), 2, 0, 0)
       } else {
         const targetRel = source.targetLevel - this.terrain.baseElevation
@@ -462,25 +495,6 @@ export class ShallowWaterSim {
     const capEnabled = hasTargetCap && !hasUnbounded
     this.depthMaterial.uniforms.uHasCap.value = capEnabled ? 1 : 0
     this.depthMaterial.uniforms.uCapRel.value = capEnabled ? capRel : 0
-  }
-
-  /** 双线性读取模拟域内任意位置的地形相对高程（米），用于「不限制」水源的本地水头。 */
-  private terrainRelativeAt(x: number, z: number): number {
-    const n = this.resolution
-    const half = this.sizeMeters / 2
-    const gx = Math.max(0, Math.min(n - 1, ((x + half) / this.sizeMeters) * (n - 1)))
-    const gz = Math.max(0, Math.min(n - 1, ((z + half) / this.sizeMeters) * (n - 1)))
-    const x0 = Math.floor(gx)
-    const z0 = Math.floor(gz)
-    const x1 = Math.min(n - 1, x0 + 1)
-    const z1 = Math.min(n - 1, z0 + 1)
-    const fx = gx - x0
-    const fz = gz - z0
-    const h00 = this.terrain.heights[z0 * n + x0]
-    const h10 = this.terrain.heights[z0 * n + x1]
-    const h01 = this.terrain.heights[z1 * n + x0]
-    const h11 = this.terrain.heights[z1 * n + x1]
-    return (h00 * (1 - fx) + h10 * fx) * (1 - fz) + (h01 * (1 - fx) + h11 * fx) * fz
   }
 
   /** 同步读回统计：先渲染 4x4 降采样统计，再读回小纹理（远小于整张状态纹理）。 */
@@ -498,6 +512,7 @@ export class ShallowWaterSim {
     const previousAutoClear = this.renderer.autoClear
     this.renderer.autoClear = false
     try {
+      this.statsMaterial.uniforms.uState.value = this.stateTexture
       this.renderPass(this.statsMaterial, this.statsTarget)
     } catch (error) {
       console.warn('[ShallowWaterSim] 统计 pass 失败', error)
@@ -536,12 +551,4 @@ export class ShallowWaterSim {
     this.cachedWetCells = wetCells
     this.cachedMaxDepth = maxDepth
   }
-}
-
-function toFiniteNumber(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) ? value : null
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value))
 }

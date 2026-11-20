@@ -27,7 +27,6 @@ export const WATER_DOMAIN = Object.freeze({
 
 /** 模拟网格边长档位。 */
 export const SIM_RESOLUTION_OPTIONS = [192, 256, 384] as const
-export type SimResolution = (typeof SIM_RESOLUTION_OPTIONS)[number]
 
 /** 地形高度场采样网格边长（固定 97×97，约 0.2 ms/点）。 */
 export const TERRAIN_GRID_SIZE = 97
@@ -35,7 +34,10 @@ export const TERRAIN_GRID_SIZE = 97
 export const SIM_DEFAULTS = {
   speed: 1,
   waterAmount: 15,
-  resolution: 256
+  resolution: 256,
+  maxFlowSpeed: 30,
+  damping: 0.995,
+  injectInterval: 2
 } as const
 
 export const VISUAL_DEFAULTS = {
@@ -46,7 +48,8 @@ export const VISUAL_DEFAULTS = {
   rippleScale: 1,
   flowSpeed: 1,
   foam: 1,
-  clarity: 0.62
+  clarity: 0.62,
+  opacity: 0
 } as const
 
 export interface LonLat {
@@ -76,13 +79,19 @@ export interface WaterSource {
 }
 
 export interface WaterSimSettings {
-  /** 模拟速度倍率 0.1–32。 */
+  /** 模拟速度倍率 0.1–64：1× = 实时，每个子步 1/30 s。 */
   speed: number
   /** 每次注水量（米）1–300。 */
   waterAmount: number
   /** 模拟网格边长。 */
   resolution: number
   paused: boolean
+  /** 单格允许的最大流速（m/s）5–60：越高水扩散越快，过高会放大数值振荡。 */
+  maxFlowSpeed: number
+  /** 通量阻尼 0.90–1：按 1/60 s 参考步长做幂补偿，保持每秒衰减不变。 */
+  damping: number
+  /** 注水间隔 1–8，以 1/60 s 为单位：越小注水越频繁。 */
+  injectInterval: number
 }
 
 export interface WaterVisualSettings {
@@ -102,6 +111,8 @@ export interface WaterVisualSettings {
   foam: number
   /** 水体清澈度 0–1。 */
   clarity: number
+  /** 水面不透明度 0–1：0 完全沿用清澈度/水深的透明混合，1 深水完全不透明。 */
+  opacity: number
 }
 
 export interface WaterState {
@@ -153,6 +164,9 @@ export interface SimSettings {
   speed: number
   paused: boolean
   waterAmount: number
+  maxFlowSpeed: number
+  damping: number
+  injectInterval: number
 }
 
 export interface SimStats {
@@ -176,6 +190,11 @@ export const clamp = (value: number, min: number, max: number): number =>
 
 export function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value)
+}
+
+/** 有限数则原样返回，否则返回 null（用于校验外部数据）。 */
+export function toFiniteNumber(value: unknown): number | null {
+  return isFiniteNumber(value) ? value : null
 }
 
 export function nearestOption<T extends number>(options: readonly T[], value: unknown, fallback: T): T {
@@ -239,15 +258,30 @@ export function normalizeWaterState(raw: unknown): WaterState {
 
   const rawSim = input.sim && typeof input.sim === 'object' ? (input.sim as Record<string, unknown>) : {}
   const sim: WaterSimSettings = {
-    speed: isFiniteNumber(rawSim.speed) ? clamp(rawSim.speed, 0.1, 32) : defaults.sim.speed,
+    speed: isFiniteNumber(rawSim.speed) ? clamp(rawSim.speed, 0.1, 64) : defaults.sim.speed,
     waterAmount: isFiniteNumber(rawSim.waterAmount)
       ? clamp(rawSim.waterAmount, 1, 300)
       : defaults.sim.waterAmount,
     resolution: nearestOption(SIM_RESOLUTION_OPTIONS, rawSim.resolution, 256),
-    paused: rawSim.paused === true
+    paused: rawSim.paused === true,
+    maxFlowSpeed: isFiniteNumber(rawSim.maxFlowSpeed)
+      ? clamp(rawSim.maxFlowSpeed, 5, 60)
+      : defaults.sim.maxFlowSpeed,
+    damping: isFiniteNumber(rawSim.damping)
+      ? clamp(rawSim.damping, 0.9, 1)
+      : defaults.sim.damping,
+    injectInterval: isFiniteNumber(rawSim.injectInterval)
+      ? Math.round(clamp(rawSim.injectInterval, 1, 8))
+      : defaults.sim.injectInterval
   }
 
   const rawVisual = input.visual && typeof input.visual === 'object' ? (input.visual as Record<string, unknown>) : {}
+  // 兼容短暂的布尔版本工程（opaque: true/false）。
+  const opacity = isFiniteNumber(rawVisual.opacity)
+    ? clamp(rawVisual.opacity, 0, 1)
+    : rawVisual.opaque === true
+      ? 1
+      : defaults.visual.opacity
   const visual: WaterVisualSettings = {
     shimmer: isFiniteNumber(rawVisual.shimmer) ? clamp(rawVisual.shimmer, 0, 3) : defaults.visual.shimmer,
     glint: isFiniteNumber(rawVisual.glint) ? clamp(rawVisual.glint, 0.3, 2.5) : defaults.visual.glint,
@@ -262,7 +296,10 @@ export function normalizeWaterState(raw: unknown): WaterState {
       ? clamp(rawVisual.flowSpeed, 0, 2)
       : defaults.visual.flowSpeed,
     foam: isFiniteNumber(rawVisual.foam) ? clamp(rawVisual.foam, 0, 2) : defaults.visual.foam,
-    clarity: isFiniteNumber(rawVisual.clarity) ? clamp(rawVisual.clarity, 0, 1) : defaults.visual.clarity
+    clarity: isFiniteNumber(rawVisual.clarity)
+      ? clamp(rawVisual.clarity, 0, 1)
+      : defaults.visual.clarity,
+    opacity
   }
 
   const sources: WaterSource[] = []

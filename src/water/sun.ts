@@ -119,7 +119,7 @@ function mixRgb(day: Rgb, dusk: Rgb, night: Rgb, dayW: number, duskW: number, ni
 }
 
 /** 由太阳高度角得到日/黄昏/夜三档权重（平滑、和为 1）。 */
-export function sunWeightsForAltitude(altitude: number): {
+function sunWeightsForAltitude(altitude: number): {
   dayWeight: number
   duskWeight: number
   nightWeight: number
@@ -136,32 +136,6 @@ export function sunWeightsForAltitude(altitude: number): {
 }
 
 /**
- * 太阳高度角（弧度）→ 水面天空反射主色（线性辐射亮度）。
- *
- * 日间是亮蓝、黄昏偏暖橙、夜间深蓝。
- */
-export function skyTintForSun(altitude: number): THREE.Color {
-  const { dayWeight, duskWeight, nightWeight } = sunWeightsForAltitude(altitude)
-  return colorFromRgb(
-    mixRgb(DAY.skyZenith, DUSK.skyZenith, NIGHT.skyZenith, dayWeight, duskWeight, nightWeight)
-  )
-}
-
-/** 太阳高度角（弧度）→ 天空反射的「地平线」色（线性辐射亮度）。 */
-export function skyHorizonTintForSun(altitude: number): THREE.Color {
-  const { dayWeight, duskWeight, nightWeight } = sunWeightsForAltitude(altitude)
-  return colorFromRgb(
-    mixRgb(DAY.skyHorizon, DUSK.skyHorizon, NIGHT.skyHorizon, dayWeight, duskWeight, nightWeight)
-  )
-}
-
-/** 太阳高度角（弧度）→ 太阳高光颜色（线性辐射亮度）。 */
-export function sunColorForAltitude(altitude: number): THREE.Color {
-  const { dayWeight, duskWeight, nightWeight } = sunWeightsForAltitude(altitude)
-  return colorFromRgb(mixRgb(DAY.sun, DUSK.sun, NIGHT.sun, dayWeight, duskWeight, nightWeight))
-}
-
-/**
  * 由太阳方向（ENU，单位向量）推导完整光照状态。
  *
  * 只读取 up 分量作为太阳高度角，因此传入未归一化向量时会先归一化。
@@ -173,7 +147,7 @@ export function sunStateForDirection(directionEnu: THREE.Vector3): SunState {
 }
 
 /** 由高度角直接构造光照状态（方位角可任填）。 */
-export function sunStateForAltitude(
+function sunStateForAltitude(
   direction: THREE.Vector3,
   altitude: number,
   azimuth = 0
@@ -209,7 +183,7 @@ export function sunStateForAltitude(
 }
 
 /** 朱利安日（UTC）。 */
-export function julianDay(date: Date): number {
+function julianDay(date: Date): number {
   return date.getTime() / DAY_MS + JULIAN_UNIX_EPOCH
 }
 
@@ -263,9 +237,4 @@ export function computeSunDirectionENU(
     Math.sin(altitude),
     cosAltitude * Math.cos(azimuth)
   ).normalize()
-}
-
-/** 计算太阳 ENU 方向并附带完整水面配色。 */
-export function computeSunState(date: Date, longitude: number, latitude: number): SunState {
-  return sunStateForDirection(computeSunDirectionENU(date, longitude, latitude))
 }

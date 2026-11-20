@@ -10,7 +10,9 @@
  * - 纹理 `uv = ((i + 0.5) / N, (j + 0.5) / N)`，i 向东、j 向北，v=0 在南；
  * - 状态纹理：R = 水深 m，G = 东向速度 m/s，B = 北向速度 m/s，
  *   A = 相对 baseElevation 的地形高程 m；
- * - 通量纹理：R/G/B/A = 向西/东/北/南四个方向的出流体积流率 m³/s。
+ * - 通量纹理：R/G/B/A = 向西/东/北/南四个方向的出流体积流率 m³/s；
+ * - 模拟域边界为**开放吸收边界**：域外视为同地形、水深 0 的虚拟格，
+ *   水一旦流到边界就向域外排出并被吸收，不会像墙那样在边缘堆积或反射。
  */
 
 /** 全屏三角顶点着色器：顶点坐标即裁剪空间坐标，不需要相机矩阵。 */
@@ -72,11 +74,14 @@ void main() {
   float outB = 0.0;
 
   if (depth > 1e-5) {
-    // CLAMP 到边界时邻居退化成当前格，水面高程差为 0 => 封闭边界、朝外通量为 0。
-    float etaL = surfaceEta(texelFetch(uState, clamp(p + ivec2(-1, 0), ivec2(0), hi), 0));
-    float etaR = surfaceEta(texelFetch(uState, clamp(p + ivec2(1, 0), ivec2(0), hi), 0));
-    float etaT = surfaceEta(texelFetch(uState, clamp(p + ivec2(0, 1), ivec2(0), hi), 0));
-    float etaB = surfaceEta(texelFetch(uState, clamp(p + ivec2(0, -1), ivec2(0), hi), 0));
+    // 开放（吸收）边界：域外虚拟格的水深为 0、地形与当前格相同，
+    // 即域外水面高程 = 当前格地形高程。边界格因此只出不进：到达边界的水
+    // 会向外流出并被吸收，而不是像墙一样在边缘堆积、反射回域内。
+    float etaOutside = state.a;
+    float etaL = p.x > 0 ? surfaceEta(texelFetch(uState, p + ivec2(-1, 0), 0)) : etaOutside;
+    float etaR = p.x < hi.x ? surfaceEta(texelFetch(uState, p + ivec2(1, 0), 0)) : etaOutside;
+    float etaT = p.y < hi.y ? surfaceEta(texelFetch(uState, p + ivec2(0, 1), 0)) : etaOutside;
+    float etaB = p.y > 0 ? surfaceEta(texelFetch(uState, p + ivec2(0, -1), 0)) : etaOutside;
 
     // 显式扩散稳定性上限：depth * v * dt / cellWidth^2 <= 0.2，
     // 深水 + 大水位差时自动放慢，避免数值振荡。
@@ -155,6 +160,7 @@ void main() {
   float sumOut = flux.r + flux.g + flux.b + flux.a;
 
   // 邻居朝本格的出流：西邻居向东 = G，东邻居向西 = R，南邻居向北 = B，北邻居向南 = A。
+  // 域外没有入流（边界为开放吸收边界），因此边界方向按 0 累加。
   float inWest = 0.0;
   if (p.x > 0) inWest = texelFetch(uFlux, ivec2(p.x - 1, p.y), 0).g;
   float inEast = 0.0;
@@ -166,7 +172,7 @@ void main() {
 
   float newDepth = depth + (inWest + inEast + inSouth + inNorth - sumOut) * uDt / cellArea;
 
-  // 注水：每 2 个子步一次；半径内余弦衰减；有目标水位时只补到该水位。
+  // 注水：由 CPU 按模拟时间触发；半径内余弦衰减；有目标水位时只补到该水位。
   if (uInject > 0.5 && uSourceCount > 0) {
     vec2 position = (vUv - 0.5) * uDomainSize;
     for (int i = 0; i < MAX_SOURCES; i++) {
@@ -205,17 +211,6 @@ void main() {
   if (speed > 30.0) velocity *= 30.0 / speed;
 
   gl_FragColor = vec4(newDepth, velocity.x, velocity.y, terrainRel);
-}
-`
-
-/** 把当前状态拷贝到对外暴露的展示纹理（稳定身份 + 线性过滤）。 */
-export const COPY_FRAGMENT = /* glsl */ `
-uniform sampler2D uState;
-
-varying vec2 vUv;
-
-void main() {
-  gl_FragColor = texture2D(uState, vUv);
 }
 `
 

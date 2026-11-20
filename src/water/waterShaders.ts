@@ -83,6 +83,7 @@ uniform float uRippleScale;
 uniform float uFlowSpeed;
 uniform float uFoam;
 uniform float uClarity;
+uniform float uOpacity;
 
 uniform vec3 uSunLocal;
 uniform vec3 uSunColor;
@@ -240,8 +241,15 @@ void main() {
   float depthFade = smoothstep(0.035, 0.3, depth);
   waterAlpha *= depthFade * edgeFade;
   float alpha = max(waterAlpha, foam * 0.75 * edgeFade);
+
+  // ---- 透明 / 不透明 ----
+  // uOpacity = 0 时完全沿用清澈度、水深、菲涅尔与泡沫决定的透明混合；
+  // = 1 时深水直接到不透明 alpha，1 之间线性过渡；浅水与域边界始终保留淡出。
+  float opacity = clamp(uOpacity, 0.0, 1.0);
+  float opaqueAlpha = max(depthFade * edgeFade, foam * 0.75 * edgeFade);
+  alpha = mix(alpha, max(alpha, opaqueAlpha), opacity);
   if (alpha < 0.004) discard;
 
-  waterFragColor = vec4(color, clamp(alpha, 0.0, 0.95));
+  waterFragColor = vec4(color, clamp(alpha, 0.0, mix(0.95, 1.0, opacity)));
 }
 `
