@@ -1,4 +1,5 @@
 import { TERRAIN_GRID_SIZE, WATER_DOMAIN, type TerrainField } from './types'
+import { STATIC_HOST, assetPath } from '../ui/assets'
 
 /**
  * 固定模拟域地形高度场的本地存储。
@@ -11,7 +12,7 @@ import { TERRAIN_GRID_SIZE, WATER_DOMAIN, type TerrainField } from './types'
  * 之后进入水体编辑 / 刷新页面直接恢复，不再飞行相机与重新采样地形。
  */
 export const WATER_DOMAIN_CACHE_KEY = 'tellux-water-domain-v1'
-export const WATER_DOMAIN_SERVER_URL = '/domain-cache/domain.json'
+export const WATER_DOMAIN_SERVER_URL = assetPath('domain-cache/domain.json')
 const CACHE_VERSION = 1
 const HEIGHTS_BASE64_CHUNK = 0x8000
 
@@ -169,6 +170,8 @@ export function getCachedDomainInfo(): CachedDomainInfo | null {
 
 /** 从服务器本地缓存（.cache/tiles/domain）读取模拟域地形；不可用时返回 null。 */
 export async function fetchServerDomainField(): Promise<TerrainField | null> {
+  // 纯静态托管（GitHub Pages）没有该接口，直接用浏览器缓存 / 现场采样。
+  if (STATIC_HOST) return null
   try {
     const response = await fetch(WATER_DOMAIN_SERVER_URL, { cache: 'no-store' })
     if (!response.ok) return null
@@ -180,6 +183,7 @@ export async function fetchServerDomainField(): Promise<TerrainField | null> {
 
 /** 把模拟域地形写入服务器本地缓存（跨浏览器共享）；失败时静默返回 false。 */
 export async function saveDomainFieldToServer(field: TerrainField): Promise<boolean> {
+  if (STATIC_HOST) return false
   const payload = createPayload(field)
   if (!payload) return false
   try {
@@ -196,6 +200,7 @@ export async function saveDomainFieldToServer(field: TerrainField): Promise<bool
 
 /** 清除服务器本地缓存中的模拟域地形（下次进入会重新采样）。 */
 export async function clearServerDomainField(): Promise<boolean> {
+  if (STATIC_HOST) return false
   try {
     const response = await fetch(WATER_DOMAIN_SERVER_URL, { method: 'DELETE' })
     return response.ok

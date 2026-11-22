@@ -41,7 +41,8 @@ ArcGIS 并写盘。浏览器端不再需要 Cesium token。
 
 ## 配置
 
-`.env` 中的 Cesium Ion token 现在只用于**服务端回源与预热**（前端不再直接访问 Cesium Ion）：
+`.env` 中的 Cesium Ion token 用于本地**服务端回源与预热**；GitHub Actions 使用工作流内置
+token（或 secret 覆盖）在 CI 预热。前端不直接访问 Cesium Ion：
 
 ```dotenv
 CESIUM_ION_TOKEN=你的_cesium_ion_token
@@ -105,8 +106,11 @@ npm run cache:prefetch -- --size 80000 --imagery-levels 8-16
   `/domain-cache/domain.json`（GET / POST / DELETE）模拟域本地存储接口
 - `scripts/cache-region.mjs`：`npm run cache:prefetch` 命令
 - `src/water/domainCache.ts`：模拟域地形高度场编解码、浏览器 localStorage 与服务器缓存读写
-- `vite.config.ts`：dev / preview 挂载缓存中间件
+- `vite.config.ts`：dev / preview 挂载缓存中间件，并按 `BASE_PATH` 生成子路径构建
 - `server.mjs`：生产服务器挂载缓存中间件，并在启动日志输出缓存块数与目录
+- `scripts/export-static-cache.mjs`：把 `.cache/tiles` 导出为静态站点资源（GitHub Pages）
+- `.github/workflows/deploy-pages.yml`：Pages 的构建 / 预热 / 发布工作流
+- `src/ui/assets.ts`：静态资源基础路径与静态托管标记
 
 ## 体积云与大气
 
@@ -311,6 +315,7 @@ src/
 │   ├── cloudControls.ts  # 场景控制台：体积云 / 大气 / 时间
 │   ├── cloudTuning.ts    # 云步进 / 散射 / 湍流等底层数值
 │   ├── dom.ts            # 必选 / 可选 DOM 查询、滑杆轨道填充
+│   ├── assets.ts         # 基础路径与静态托管标记（GitHub Pages）
 │   └── format.ts         # HUD 文案（时间、坐标、高度）
 └── water/
     ├── types.ts          # 状态模型与三层共享契约（含 clamp / 数值校验）
@@ -346,6 +351,7 @@ src/
 | --- | --- |
 | `npm run dev` | Vite 开发服务器（`127.0.0.1:5173`，带本地瓦片缓存中间件） |
 | `npm run build` | 生产构建到 `dist/` |
+| `npm run build:pages` | 静态托管构建：`vite build` + 把 `.cache/tiles` 导出为 `dist/terrain-cache`、`dist/imagery-cache` |
 | `npm start` | 运行 `server.mjs`，托管 `dist/` 并提供本地瓦片缓存 |
 | `npm run cache:prefetch` | 预热 116.77,36.02 附近 50×50 km 的地形与影像瓦片（支持参数，见上节） |
 | `npm run type-check` | TypeScript 类型检查（`strict` + 未使用变量检查） |
@@ -356,6 +362,64 @@ src/
 `npm run verify` 会自动在 5199 端口启动 Vite（同样挂载本地缓存）、用本机 Chrome / Edge
 **有头模式**跑一遍完整流程；地形与影像走本地缓存，缺少的瓦片会自动回源（需要 `.env` 中的
 `CESIUM_ION_TOKEN` 且能访问 Cesium Ion / ArcGIS）。
+
+## GitHub Pages 部署
+
+仓库自带 [`.github/workflows/deploy-pages.yml`](<.github/workflows/deploy-pages.yml>)：
+推送到 `master` / `main` 或手动触发时，自动预热瓦片、按 Pages 子路径构建并发布。
+
+### 首次配置
+
+1. 仓库 **Settings → Pages → Build and deployment → Source** 设为 **GitHub Actions**。
+2. Token：工作流里已内置一个 Cesium Ion token，CI 会用它联网预热地形/影像；也可以添加
+   repository secret `CESIUM_ION_TOKEN` 覆盖内置值。
+   - ⚠️ 仓库是公开的，内置 token 会随工作流文件一起公开，请只使用可随时轮换的 token；
+     更安全的做法是删除工作流里的内置值，只在 **Settings → Secrets and variables → Actions**
+     配置 `CESIUM_ION_TOKEN`。
+3. 推送到默认分支，等待 Actions 里的 *Deploy to GitHub Pages* 完成。
+
+默认地址为 `https://<用户名>.github.io/Reservoir_matrix_management_system/`。工作流会根据
+仓库名自动计算 `BASE_PATH`；用户/组织站点（`<用户名>.github.io`）会自动使用 `/`。
+
+### 可选仓库 Variables
+
+| Variable | 默认 | 说明 |
+| --- | --- | --- |
+| `PAGES_BASE_PATH` | 自动 | 自定义域名或特殊子路径时覆盖，例如 `/` |
+| `PREFETCH_SIZE` | `50000` | 预热区域边长（米），默认与本地缓存一致，覆盖初始视角与 8 km 模拟域 |
+| `PREFETCH_TERRAIN_LEVELS` | `0-14` | 地形层级 |
+| `PREFETCH_IMAGERY_LEVELS` | `8-15` | 影像层级 |
+| `PREFETCH_CONCURRENCY` | `8` | 瓦片并发下载数 |
+
+### 工作流做了什么
+
+1. `npm ci` + `npm run check`；
+2. 从 Actions Cache 恢复 `.cache/tiles`，用内置 token（或 `CESIUM_ION_TOKEN` secret）执行
+   `cache:prefetch` 联网补齐瓦片（已有文件会跳过）；
+3. `BASE_PATH=/<仓库名>/ VITE_STATIC_HOST=1 npm run build:pages`；
+4. 构建后由 `scripts/export-static-cache.mjs` 把瓦片复制成
+   `dist/terrain-cache`、`dist/imagery-cache`，并写入 `.nojekyll`；
+5. 上传 `dist/` 为 Pages artifact 并部署。
+
+瓦片数据**不进入 git 仓库**：`.cache/tiles/` 与 `dist/` 都在 `.gitignore` 中，只在 Actions
+运行时联网下载并以 Actions Cache 复用；Pages artifact 是部署产物，不是仓库内容。
+
+### 静态托管的差异
+
+- 没有 `/terrain-cache`、`/imagery-cache`、`/domain-cache` 等服务端中间件：地形/影像直接从
+  `dist/` 里的静态瓦片读取；`/domain-cache` 在静态构建下自动关闭（浏览器 localStorage
+  自动保存仍然有效，服务器端共享缓存不可用）。
+- 站点只包含预热范围内的瓦片与层级；平移到范围外或放大超过预热层级时，缺失瓦片会 404，
+  可通过上面的 Variables 扩大预热范围/层级。
+- Cesium Ion token 只在 CI 预热时使用，不会出现在前端产物中。
+- 本地预览静态产物：
+
+  ```bash
+  BASE_PATH=/Reservoir_matrix_management_system/ VITE_STATIC_HOST=1 npm run build:pages
+  npm run preview   # http://127.0.0.1:4173/Reservoir_matrix_management_system/
+  ```
+
+  Windows PowerShell 可用 `$env:BASE_PATH='/...'; $env:VITE_STATIC_HOST='1'; npm run build:pages`。
 
 ## 已知限制
 

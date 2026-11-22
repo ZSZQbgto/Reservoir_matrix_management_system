@@ -1,0 +1,97 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check and tests
+        run: npm run check
+
+      - name: Restore tile cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/tiles
+          # 预热范围 / 层级可用仓库 Variables 覆盖；默认沿用项目本地的 50 km / 0-14 / 8-15。
+          key: tiles-${{ runner.os }}-${{ vars.PREFETCH_SIZE || '50000' }}-${{ vars.PREFETCH_TERRAIN_LEVELS || '0-14' }}-${{ vars.PREFETCH_IMAGERY_LEVELS || '8-15' }}-${{ hashFiles('scripts/tile-cache.mjs') }}
+          restore-keys: |
+            tiles-${{ runner.os }}-
+
+      # 有 token 时每次都跑一遍（已有瓦片会跳过，相当于补齐缓存）；
+      # 没有 token 时只允许使用已恢复的缓存，避免部署出没有地形的站点。
+      - name: Prefetch terrain and imagery
+        env:
+          # 仓库内置 token 仅用于 CI 预热，不会进入前端产物。
+          # 建议后续改用 CESIUM_ION_TOKEN secret 覆盖，并轮换已提交的 token。
+          CESIUM_ION_TOKEN: ${{ secrets.CESIUM_ION_TOKEN || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJub25jZSI6IlFsN2I5MXMzOVNRRzFBdjYiLCJqdGkiOiI5NzBmMTIzZC03ZDllLTQwZjYtOGM5Mi0yODg1ODBlZWQzOTIiLCJpZCI6NTIwMDY4LCJpc3MiOiJodHRwczovL2FwaS5jZXNpdW0uY29tIiwiYXVkIjoidW5kZWZpbmVkX2RlZmF1bHQiLCJpYXQiOjE3OTE2ODg1MDZ9.RjsXfh_XSK_ymZo02AXsXCLrG7JcZvqDn1MiGXajbR8' }}
+          PREFETCH_SIZE: ${{ vars.PREFETCH_SIZE || '50000' }}
+          PREFETCH_TERRAIN_LEVELS: ${{ vars.PREFETCH_TERRAIN_LEVELS || '0-14' }}
+          PREFETCH_IMAGERY_LEVELS: ${{ vars.PREFETCH_IMAGERY_LEVELS || '8-15' }}
+          PREFETCH_CONCURRENCY: ${{ vars.PREFETCH_CONCURRENCY || '8' }}
+        run: |
+          if [ -n "${CESIUM_ION_TOKEN}" ]; then
+            npm run cache:prefetch -- \
+              --size "$PREFETCH_SIZE" \
+              --terrain-levels "$PREFETCH_TERRAIN_LEVELS" \
+              --imagery-levels "$PREFETCH_IMAGERY_LEVELS" \
+              --concurrency "$PREFETCH_CONCURRENCY" \
+              || npm run cache:prefetch -- \
+                --size "$PREFETCH_SIZE" \
+                --terrain-levels "$PREFETCH_TERRAIN_LEVELS" \
+                --imagery-levels "$PREFETCH_IMAGERY_LEVELS" \
+                --concurrency "$PREFETCH_CONCURRENCY"
+          elif [ -f .cache/tiles/terrain/layer.json ]; then
+            echo "未配置 CESIUM_ION_TOKEN，使用已恢复的 .cache/tiles 继续构建。"
+          else
+            echo "::error::缺少 CESIUM_ION_TOKEN：请在仓库 Settings → Secrets and variables → Actions 添加该 secret，或提交可用的 .cache/tiles 瓦片缓存。"
+            exit 1
+          fi
+
+      - name: Build static site
+        env:
+          # 项目站点默认 /<仓库名>/；用户/组织站点或自定义域名可通过 PAGES_BASE_PATH=/ 覆盖。
+          BASE_PATH: ${{ vars.PAGES_BASE_PATH || (endsWith(github.repository, '.github.io') && '/' || format('/{0}/', github.event.repository.name)) }}
+          VITE_STATIC_HOST: '1'
+        run: npm run build:pages
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

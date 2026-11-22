@@ -6,6 +6,19 @@ import { createTileCache } from './scripts/tile-cache.mjs'
 const rootDir = dirname(fileURLToPath(import.meta.url))
 
 /**
+ * 站点基础路径。
+ *
+ * 本地 / 自建服务器：`/`；GitHub Pages 项目站点：`/<仓库名>/`。
+ * 由 CI 的 `BASE_PATH` 环境变量注入，构建产物里的资源、瓦片端点与运行时
+ * `import.meta.env.BASE_URL` 都会使用同一前缀。
+ */
+function resolveBasePath(): string {
+  const raw = process.env.BASE_PATH?.trim()
+  if (!raw || raw === '/') return '/'
+  return `/${raw.replace(/^\/+|\/+$/g, '')}/`
+}
+
+/**
  * dev / preview 服务器上的地形与影像本地缓存中间件。
  *
  * 优先从 `.cache/tiles` 返回 Cesium 地形 / ArcGIS 影像瓦片，缺块时回源并写盘，
@@ -38,7 +51,7 @@ export default defineConfig(({ mode }) => {
 
   return {
     root: rootDir,
-    base: '/',
+    base: resolveBasePath(),
     envDir: rootDir,
     plugins: [tileCachePlugin(env.CESIUM_ION_TOKEN || '')],
     resolve: {

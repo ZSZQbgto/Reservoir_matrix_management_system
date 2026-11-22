@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .tmp/
+.dsh-acl-recovery/
 .env
 *.local
 *.log

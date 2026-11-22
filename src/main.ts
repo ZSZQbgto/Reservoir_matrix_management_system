@@ -2,6 +2,7 @@ import tellux, { type ImageryLayerOptions, type TerrainOptions, type Viewer } fr
 import { WaterEditor } from './water/waterEditor'
 import { initUiShell } from './ui/shell'
 import { CLOUD_SCENE_DEFAULTS, initCloudControls } from './ui/cloudControls'
+import { assetPath } from './ui/assets'
 import { requireElement } from './ui/dom'
 import {
   DEFAULT_TIME_MINUTES,
@@ -63,14 +64,14 @@ function showToast(message: string, duration = 2600): void {
   toastTimer = window.setTimeout(() => toast.classList.remove('is-visible'), duration)
 }
 
-/** 影像走本地缓存端点；缺块由缓存服务回源 ArcGIS 并写盘。 */
+/** 影像优先走本地缓存端点；静态托管时由构建脚本把缓存瓦片一并发布。 */
 function createOverlays(): ImageryLayerOptions[] {
   return [
     {
       name: 'Cesium / ArcGIS World Imagery（本地缓存）',
       source: {
         type: 'xyz',
-        url: '/imagery-cache/{z}/{y}/{x}',
+        url: assetPath('imagery-cache/{z}/{y}/{x}'),
         levels: 19,
         projection: 'EPSG:3857',
         tileDimension: 256
@@ -82,7 +83,7 @@ function createOverlays(): ImageryLayerOptions[] {
 function createTerrainOptions(): TerrainOptions {
   return {
     type: 'url',
-    url: '/terrain-cache/layer.json',
+    url: assetPath('terrain-cache/layer.json'),
     tileLoading: {
       enableTileSplitting: false,
       imageryResolution: 256
@@ -105,7 +106,7 @@ async function boot(): Promise<void> {
   let viewer: Viewer
   try {
     viewer = new tellux.Viewer(requireElement<HTMLElement>('#viewer'), {
-      dracoDecoderPath: '/draco/',
+      dracoDecoderPath: assetPath('draco/'),
       clock: {
         currentTime: minutesToSceneDate(DEFAULT_TIME_MINUTES),
         shouldAnimate: false
