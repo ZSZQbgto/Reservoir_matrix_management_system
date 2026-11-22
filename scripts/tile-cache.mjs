@@ -59,11 +59,12 @@ export function regionBounds(region = DEFAULT_REGION) {
     111412.84 * Math.cos(latRad) - 93.5 * Math.cos(3 * latRad) + 0.118 * Math.cos(5 * latRad)
   const halfLat = region.sizeMeters / 2 / mPerDegLat
   const halfLon = region.sizeMeters / 2 / Math.max(1, mPerDegLon)
+  // WebMercator 的纬度上限约 ±85°；超大区域（全球低层级预热）按世界范围裁剪。
   return {
-    minLon: region.longitude - halfLon,
-    maxLon: region.longitude + halfLon,
-    minLat: region.latitude - halfLat,
-    maxLat: region.latitude + halfLat,
+    minLon: Math.max(-180, region.longitude - halfLon),
+    maxLon: Math.min(180, region.longitude + halfLon),
+    minLat: Math.max(-85, region.latitude - halfLat),
+    maxLat: Math.min(85, region.latitude + halfLat),
     mPerDegLat,
     mPerDegLon
   }

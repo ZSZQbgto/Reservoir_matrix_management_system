@@ -6,14 +6,16 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 5173",
     "build": "vite build",
-    "build:pages": "vite build && node scripts/export-static-cache.mjs",
+    "build:pages": "vite build",
+    "build:pages:offline": "vite build && node scripts/export-static-cache.mjs",
     "preview": "vite preview --host 127.0.0.1 --port 4173",
     "start": "node server.mjs",
     "type-check": "tsc --noEmit",
     "check": "npm run type-check && npm test",
     "verify": "node scripts/verify.mjs",
     "test": "node tests/water-state.test.mjs",
-    "cache:prefetch": "node scripts/cache-region.mjs"
+    "cache:prefetch": "node scripts/cache-region.mjs",
+    "cache:static": "node scripts/cache-static.mjs"
   },
   "dependencies": {
     "@takram/three-atmosphere": "0.19.1",

@@ -28,6 +28,16 @@ const INITIAL_VIEW = {
   pitch: -75
 }
 
+/**
+ * 静态托管（GitHub Pages）下直接使用 Cesium Ion 的地形 / 影像服务；
+ * token 由构建时注入 `VITE_CESIUM_ION_TOKEN`，因此会出现在前端产物里。
+ * 本地 / 自建服务器仍走 .cache/tiles + 本地中间件。
+ */
+const ION_TOKEN = (import.meta.env.VITE_CESIUM_ION_TOKEN ?? '').trim()
+const USE_CESIUM_ION = STATIC_HOST && ION_TOKEN.length > 0
+const CESIUM_TERRAIN_ASSET_ID = 1
+const CESIUM_IMAGERY_ASSET_ID = 2
+
 const loader = requireElement('#loader')
 const loaderDetail = requireElement('#loader-detail')
 const loaderBar = requireElement<HTMLElement>('#loader-bar')
@@ -64,17 +74,27 @@ function showToast(message: string, duration = 2600): void {
   toastTimer = window.setTimeout(() => toast.classList.remove('is-visible'), duration)
 }
 
-/** 影像优先走本地缓存端点；静态托管时由构建脚本把缓存瓦片一并发布。 */
+/** 影像：静态托管直连 Cesium Ion；本地走缓存中间件。 */
 function createOverlays(): ImageryLayerOptions[] {
+  if (USE_CESIUM_ION) {
+    return [
+      {
+        name: 'Cesium World Imagery（Cesium Ion）',
+        source: {
+          type: 'cesium-ion',
+          assetId: CESIUM_IMAGERY_ASSET_ID,
+          apiToken: ION_TOKEN
+        }
+      }
+    ]
+  }
   return [
     {
       name: 'Cesium / ArcGIS World Imagery（本地缓存）',
       source: {
         type: 'xyz',
-        // 缓存文件是 `.jpg`；静态托管不会像本地中间件那样补扩展名。
         url: assetPath('imagery-cache/{z}/{y}/{x}.jpg'),
-        // 静态站点只预热到 15 级，避免向 Pages 请求未缓存的更高级瓦片。
-        levels: STATIC_HOST ? 16 : 19,
+        levels: 19,
         projection: 'EPSG:3857',
         tileDimension: 256
       }
@@ -82,7 +102,19 @@ function createOverlays(): ImageryLayerOptions[] {
   ]
 }
 
+/** 地形：静态托管直连 Cesium World Terrain；本地走缓存中间件。 */
 function createTerrainOptions(): TerrainOptions {
+  if (USE_CESIUM_ION) {
+    return {
+      type: 'cesium-ion',
+      apiToken: ION_TOKEN,
+      assetId: CESIUM_TERRAIN_ASSET_ID,
+      tileLoading: {
+        enableTileSplitting: false,
+        imageryResolution: 256
+      }
+    }
+  }
   return {
     type: 'url',
     url: assetPath('terrain-cache/layer.json'),

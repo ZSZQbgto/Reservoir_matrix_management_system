@@ -41,8 +41,8 @@ ArcGIS 并写盘。浏览器端不再需要 Cesium token。
 
 ## 配置
 
-`.env` 中的 Cesium Ion token 用于本地**服务端回源与预热**；GitHub Actions 使用工作流内置
-token（或 secret 覆盖）在 CI 预热。前端不直接访问 Cesium Ion：
+`.env` 中的 Cesium Ion token 用于本地服务端回源；GitHub Pages 构建时通过
+`VITE_CESIUM_ION_TOKEN` 注入前端，浏览器直连 Cesium Ion 地形/影像：
 
 ```dotenv
 CESIUM_ION_TOKEN=你的_cesium_ion_token
@@ -105,6 +105,7 @@ npm run cache:prefetch -- --size 80000 --imagery-levels 8-16
 - `scripts/tile-cache.mjs`：共享缓存中间件（dev / preview / 生产）+ 预热实现 +
   `/domain-cache/domain.json`（GET / POST / DELETE）模拟域本地存储接口
 - `scripts/cache-region.mjs`：`npm run cache:prefetch` 命令
+- `scripts/cache-static.mjs`：可选离线预热（全球低层级 + 区域高层级）
 - `src/water/domainCache.ts`：模拟域地形高度场编解码、浏览器 localStorage 与服务器缓存读写
 - `vite.config.ts`：dev / preview 挂载缓存中间件，并按 `BASE_PATH` 生成子路径构建
 - `server.mjs`：生产服务器挂载缓存中间件，并在启动日志输出缓存块数与目录
@@ -351,9 +352,11 @@ src/
 | --- | --- |
 | `npm run dev` | Vite 开发服务器（`127.0.0.1:5173`，带本地瓦片缓存中间件） |
 | `npm run build` | 生产构建到 `dist/` |
-| `npm run build:pages` | 静态托管构建：`vite build` + 把 `.cache/tiles` 导出为 `dist/terrain-cache`、`dist/imagery-cache` |
+| `npm run build:pages` | GitHub Pages 构建：按 `BASE_PATH` 产出静态站点，浏览器直连 Cesium Ion |
+| `npm run build:pages:offline` | 可选离线构建：`vite build` + 把 `.cache/tiles` 导出为静态瓦片 |
 | `npm start` | 运行 `server.mjs`，托管 `dist/` 并提供本地瓦片缓存 |
 | `npm run cache:prefetch` | 预热 116.77,36.02 附近 50×50 km 的地形与影像瓦片（支持参数，见上节） |
+| `npm run cache:static` | 可选离线预热：全球地形/影像 0–4 级 + 目标区域高层级 |
 | `npm run type-check` | TypeScript 类型检查（`strict` + 未使用变量检查） |
 | `npm run check` | 类型检查 + 单元测试，提交前跑一遍 |
 | `npm test` | 水体工程 JSON 归一化与状态模型单元测试 |
@@ -366,16 +369,18 @@ src/
 ## GitHub Pages 部署
 
 仓库自带 [`.github/workflows/deploy-pages.yml`](<.github/workflows/deploy-pages.yml>)：
-推送到 `master` / `main` 或手动触发时，自动预热瓦片、按 Pages 子路径构建并发布。
+推送到 `master` / `main` 或手动触发时，按 Pages 子路径构建并发布。静态页面在浏览器里
+**直接请求 Cesium Ion** 的 Cesium World Terrain（asset 1）与 Cesium World Imagery（asset 2），
+不需要预热或上传瓦片。
 
 ### 首次配置
 
 1. 仓库 **Settings → Pages → Build and deployment → Source** 设为 **GitHub Actions**。
-2. Token：工作流里已内置一个 Cesium Ion token，CI 会用它联网预热地形/影像；也可以添加
-   repository secret `CESIUM_ION_TOKEN` 覆盖内置值。
-   - ⚠️ 仓库是公开的，内置 token 会随工作流文件一起公开，请只使用可随时轮换的 token；
-     更安全的做法是删除工作流里的内置值，只在 **Settings → Secrets and variables → Actions**
-     配置 `CESIUM_ION_TOKEN`。
+2. 工作流里已内置 Cesium Ion token，构建时通过 `VITE_CESIUM_ION_TOKEN` 注入前端；
+   也可以添加 repository secret `CESIUM_ION_TOKEN` 覆盖内置值。
+   - token 会出现在前端 JS 中，这是实时直连 Cesium Ion 的必要代价；请按需限制/轮换。
+   - 如果 Cesium Ion 控制台给 token 配置了允许域名，需要把
+     `https://<用户名>.github.io` 加入白名单，否则浏览器请求会被拒绝。
 3. 推送到默认分支，等待 Actions 里的 *Deploy to GitHub Pages* 完成。
 
 默认地址为 `https://<用户名>.github.io/Reservoir_matrix_management_system/`。工作流会根据
@@ -386,43 +391,31 @@ src/
 | Variable | 默认 | 说明 |
 | --- | --- | --- |
 | `PAGES_BASE_PATH` | 自动 | 自定义域名或特殊子路径时覆盖，例如 `/` |
-| `PREFETCH_SIZE` | `50000` | 预热区域边长（米），默认与本地缓存一致，覆盖初始视角与 8 km 模拟域 |
-| `PREFETCH_TERRAIN_LEVELS` | `0-14` | 地形层级 |
-| `PREFETCH_IMAGERY_LEVELS` | `8-15` | 影像层级 |
-| `PREFETCH_CONCURRENCY` | `8` | 瓦片并发下载数 |
 
 ### 工作流做了什么
 
 1. `npm ci` + `npm run check`；
-2. 从 Actions Cache 恢复 `.cache/tiles`，用内置 token（或 `CESIUM_ION_TOKEN` secret）执行
-   `cache:prefetch` 联网补齐瓦片（已有文件会跳过）；
-3. `BASE_PATH=/<仓库名>/ VITE_STATIC_HOST=1 npm run build:pages`；
-4. 构建后由 `scripts/export-static-cache.mjs` 把瓦片复制成
-   `dist/terrain-cache`、`dist/imagery-cache`，按实际瓦片重写 `layer.json` 的
-   `available` / `maxzoom`（避免请求未缓存的层级），并写入 `.nojekyll`；
-5. 上传 `dist/` 为 Pages artifact 并部署。
+2. `BASE_PATH=/<仓库名>/ VITE_STATIC_HOST=1 VITE_CESIUM_ION_TOKEN=<token> npm run build:pages`；
+3. 上传 `dist/` 为 Pages artifact 并部署。
 
-瓦片数据**不进入 git 仓库**：`.cache/tiles/` 与 `dist/` 都在 `.gitignore` 中，只在 Actions
-运行时联网下载并以 Actions Cache 复用；Pages artifact 是部署产物，不是仓库内容。
+构建产物只有前端代码与 `public/` 资源（约几 MB），不包含地形/影像瓦片；瓦片由浏览器
+在运行时按 Cesium Ion 的 CDN 地址加载。
 
 ### 静态托管的差异
 
-- 没有 `/terrain-cache`、`/imagery-cache`、`/domain-cache` 等服务端中间件：地形/影像直接从
-  `dist/` 里的静态瓦片读取；`/domain-cache` 在静态构建下自动关闭（浏览器 localStorage
-  自动保存仍然有效，服务器端共享缓存不可用）。
-- 站点只包含预热范围内的瓦片与层级；平移到范围外或放大超过预热层级时，缺失瓦片会 404，
-  可通过上面的 Variables 扩大预热范围/层级。导出时会按实际 `.terrain` 文件重写
-  `layer.json` 的 `available` 与 `maxzoom`，影像 URL 使用缓存里的 `.jpg` 扩展名，
-  静态模式最多请求到 15 级影像，避免对未缓存层级反复发请求。
-- Cesium Ion token 只在 CI 预热时使用，不会出现在前端产物中。
-- 本地预览静态产物：
+- 地形与影像由浏览器直连 Cesium Ion，需要联网；Cesium Ion 有配额限制。
+- token 在前端可见；请使用可轮换、必要时限制来源的 token。
+- 没有 `/terrain-cache`、`/imagery-cache`、`/domain-cache` 服务端中间件：
+  `/domain-cache` 在静态构建下自动关闭（浏览器 localStorage 自动保存仍有效）。
+- 如果不需要实时 Cesium Ion、想要离线静态瓦片，仍可使用
+  `npm run cache:static` + `npm run build:pages:offline` 生成带瓦片的版本（产物约 130 MB）。
+- 本地预览：
 
   ```bash
-  BASE_PATH=/Reservoir_matrix_management_system/ VITE_STATIC_HOST=1 npm run build:pages
-  npm run preview   # http://127.0.0.1:4173/Reservoir_matrix_management_system/
+  BASE_PATH=/Reservoir_matrix_management_system/ VITE_STATIC_HOST=1 \
+    VITE_CESIUM_ION_TOKEN=<token> npm run build:pages
+  npm run preview
   ```
-
-  Windows PowerShell 可用 `$env:BASE_PATH='/...'; $env:VITE_STATIC_HOST='1'; npm run build:pages`。
 
 ## 已知限制
 
