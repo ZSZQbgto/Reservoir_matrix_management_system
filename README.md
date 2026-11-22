@@ -398,7 +398,8 @@ src/
    `cache:prefetch` 联网补齐瓦片（已有文件会跳过）；
 3. `BASE_PATH=/<仓库名>/ VITE_STATIC_HOST=1 npm run build:pages`；
 4. 构建后由 `scripts/export-static-cache.mjs` 把瓦片复制成
-   `dist/terrain-cache`、`dist/imagery-cache`，并写入 `.nojekyll`；
+   `dist/terrain-cache`、`dist/imagery-cache`，按实际瓦片重写 `layer.json` 的
+   `available` / `maxzoom`（避免请求未缓存的层级），并写入 `.nojekyll`；
 5. 上传 `dist/` 为 Pages artifact 并部署。
 
 瓦片数据**不进入 git 仓库**：`.cache/tiles/` 与 `dist/` 都在 `.gitignore` 中，只在 Actions
@@ -410,7 +411,9 @@ src/
   `dist/` 里的静态瓦片读取；`/domain-cache` 在静态构建下自动关闭（浏览器 localStorage
   自动保存仍然有效，服务器端共享缓存不可用）。
 - 站点只包含预热范围内的瓦片与层级；平移到范围外或放大超过预热层级时，缺失瓦片会 404，
-  可通过上面的 Variables 扩大预热范围/层级。
+  可通过上面的 Variables 扩大预热范围/层级。导出时会按实际 `.terrain` 文件重写
+  `layer.json` 的 `available` 与 `maxzoom`，影像 URL 使用缓存里的 `.jpg` 扩展名，
+  静态模式最多请求到 15 级影像，避免对未缓存层级反复发请求。
 - Cesium Ion token 只在 CI 预热时使用，不会出现在前端产物中。
 - 本地预览静态产物：
 

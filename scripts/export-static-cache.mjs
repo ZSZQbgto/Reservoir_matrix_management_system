@@ -57,6 +57,91 @@ function copyDirectory(source, target, label) {
   return usage
 }
 
+/**
+ * 按实际导出的瓦片重写 layer.json 的 available / maxzoom。
+ *
+ * Cesium 原始 layer.json 描述整颗地球（约 900 KB、到 19 级），静态站点只带
+ * 50 km 范围内的瓦片；不裁剪的话浏览器会不断请求未缓存的层级和范围，地形
+ * 看起来会一直加载。这里扫描真实存在的 .terrain 文件生成精确可用范围。
+ */
+function rewriteStaticTerrainLayer(terrainDir) {
+  const layerPath = path.join(terrainDir, 'layer.json')
+  const layer = JSON.parse(fs.readFileSync(layerPath, 'utf8'))
+  const levelsByNumber = new Map()
+
+  for (const levelEntry of fs.readdirSync(terrainDir, { withFileTypes: true })) {
+    if (!levelEntry.isDirectory() || !/^\d+$/.test(levelEntry.name)) continue
+    const level = Number(levelEntry.name)
+    const levelDir = path.join(terrainDir, levelEntry.name)
+    const rows = []
+
+    for (const xEntry of fs.readdirSync(levelDir, { withFileTypes: true })) {
+      if (!xEntry.isDirectory() || !/^\d+$/.test(xEntry.name)) continue
+      const x = Number(xEntry.name)
+      const ys = fs
+        .readdirSync(path.join(levelDir, xEntry.name))
+        .filter((name) => /^\d+\.terrain$/.test(name))
+        .map((name) => Number(name.slice(0, -'.terrain'.length)))
+        .sort((a, b) => a - b)
+      if (ys.length === 0) continue
+
+      const runs = []
+      let start = ys[0]
+      let previous = ys[0]
+      for (let i = 1; i < ys.length; i += 1) {
+        if (ys[i] === previous + 1) {
+          previous = ys[i]
+          continue
+        }
+        runs.push([start, previous])
+        start = ys[i]
+        previous = ys[i]
+      }
+      runs.push([start, previous])
+      rows.push({ x, runs })
+    }
+
+    rows.sort((a, b) => a.x - b.x)
+    const sameRuns = (a, b) =>
+      a.length === b.length &&
+      a.every((run, index) => run[0] === b[index][0] && run[1] === b[index][1])
+    const ranges = []
+    let block = null
+    const flushBlock = () => {
+      if (!block) return
+      for (const [startY, endY] of block.runs) {
+        ranges.push({ startX: block.startX, startY, endX: block.endX, endY })
+      }
+    }
+    for (const row of rows) {
+      if (block && row.x === block.endX + 1 && sameRuns(block.runs, row.runs)) {
+        block.endX = row.x
+        continue
+      }
+      flushBlock()
+      block = { startX: row.x, endX: row.x, runs: row.runs }
+    }
+    flushBlock()
+    levelsByNumber.set(level, ranges)
+  }
+
+  const maxLevel = Math.max(...levelsByNumber.keys())
+  const available = []
+  for (let level = 0; level <= maxLevel; level += 1) {
+    available[level] = levelsByNumber.get(level) ?? []
+  }
+  layer.available = available
+  layer.maxzoom = maxLevel
+  layer.minzoom = 0
+  fs.writeFileSync(layerPath, `${JSON.stringify(layer)}\n`)
+
+  const rangeCount = available.reduce((sum, ranges) => sum + ranges.length, 0)
+  console.log(
+    `[pages] layer.json: 裁剪到 0-${maxLevel} 级、${rangeCount} 个可用范围 / ` +
+      `${(fs.statSync(layerPath).size / 1024).toFixed(1)} KB`
+  )
+}
+
 if (!fs.existsSync(distDir)) {
   console.error('[pages] dist 不存在，请先运行 vite build。')
   process.exit(1)
@@ -81,16 +166,10 @@ if (!fs.existsSync(imageryDir)) {
   process.exit(1)
 }
 
-const terrainUsage = copyDirectory(
-  terrainDir,
-  path.join(distDir, 'terrain-cache'),
-  'terrain-cache'
-)
-const imageryUsage = copyDirectory(
-  imageryDir,
-  path.join(distDir, 'imagery-cache'),
-  'imagery-cache'
-)
+const staticTerrainDir = path.join(distDir, 'terrain-cache')
+const staticImageryDir = path.join(distDir, 'imagery-cache')
+const terrainUsage = copyDirectory(terrainDir, staticTerrainDir, 'terrain-cache')
+const imageryUsage = copyDirectory(imageryDir, staticImageryDir, 'imagery-cache')
 // layer.json 之外至少要有一块地形；影像缓存为空同样不能发布。
 if (terrainUsage.files < 2 || imageryUsage.files === 0) {
   console.error(
@@ -98,6 +177,8 @@ if (terrainUsage.files < 2 || imageryUsage.files === 0) {
   )
   process.exit(1)
 }
+
+rewriteStaticTerrainLayer(staticTerrainDir)
 
 // GitHub Pages 不需要 Jekyll；显式放一个标记也避免旧流程误处理资产目录。
 fs.writeFileSync(path.join(distDir, '.nojekyll'), '')

@@ -2,7 +2,7 @@ import tellux, { type ImageryLayerOptions, type TerrainOptions, type Viewer } fr
 import { WaterEditor } from './water/waterEditor'
 import { initUiShell } from './ui/shell'
 import { CLOUD_SCENE_DEFAULTS, initCloudControls } from './ui/cloudControls'
-import { assetPath } from './ui/assets'
+import { assetPath, STATIC_HOST } from './ui/assets'
 import { requireElement } from './ui/dom'
 import {
   DEFAULT_TIME_MINUTES,
@@ -71,8 +71,10 @@ function createOverlays(): ImageryLayerOptions[] {
       name: 'Cesium / ArcGIS World Imagery（本地缓存）',
       source: {
         type: 'xyz',
-        url: assetPath('imagery-cache/{z}/{y}/{x}'),
-        levels: 19,
+        // 缓存文件是 `.jpg`；静态托管不会像本地中间件那样补扩展名。
+        url: assetPath('imagery-cache/{z}/{y}/{x}.jpg'),
+        // 静态站点只预热到 15 级，避免向 Pages 请求未缓存的更高级瓦片。
+        levels: STATIC_HOST ? 16 : 19,
         projection: 'EPSG:3857',
         tileDimension: 256
       }
