@@ -1,24 +1,18 @@
 import tellux, { type ImageryLayerOptions, type TerrainOptions, type Viewer } from 'tellux'
+import { domId } from './shared/domIds'
 import { WaterEditor } from './water/waterEditor'
 import { initUiShell } from './ui/shell'
 import { CLOUD_SCENE_DEFAULTS, initCloudControls } from './ui/cloudControls'
-import { assetPath, STATIC_HOST } from './ui/assets'
-import { requireElement } from './ui/dom'
+import { assetPath, STATIC_HOST } from './shared/assets'
+import { requireElement } from './shared/dom'
 import {
   DEFAULT_TIME_MINUTES,
   formatAltitude,
   formatClockTime,
   formatCoordinate,
   minutesToSceneDate
-} from './ui/format'
+} from './shared/format'
 import './style.css'
-
-declare global {
-  interface Window {
-    viewer?: Viewer
-    waterEditor?: WaterEditor
-  }
-}
 
 const INITIAL_VIEW = {
   longitude: 116.77,
@@ -38,10 +32,10 @@ const USE_CESIUM_ION = STATIC_HOST && ION_TOKEN.length > 0
 const CESIUM_TERRAIN_ASSET_ID = 1
 const CESIUM_IMAGERY_ASSET_ID = 2
 
-const loader = requireElement('#loader')
-const loaderDetail = requireElement('#loader-detail')
-const loaderBar = requireElement<HTMLElement>('#loader-bar')
-const toast = requireElement('#toast')
+const loader = requireElement(domId('loader'))
+const loaderDetail = requireElement(domId('loader-detail'))
+const loaderBar = requireElement<HTMLElement>(domId('loader-bar'))
+const toast = requireElement(domId('toast'))
 
 function setLoader(progress: number, detail: string): void {
   loaderDetail.textContent = detail
@@ -63,7 +57,8 @@ function showError(message: string): void {
   const title = loader.querySelector('strong')
   if (title) title.textContent = '三维地球加载失败'
   loaderBar.style.width = '100%'
-  loaderBar.style.background = 'linear-gradient(90deg, #ff9d7a, #ff6c5c)'
+  // 清掉 setLoader 写的内联背景，让 .loader.is-error 的样式生效。
+  loaderBar.style.background = ''
 }
 
 let toastTimer = 0
@@ -73,6 +68,33 @@ function showToast(message: string, duration = 2600): void {
   window.clearTimeout(toastTimer)
   toastTimer = window.setTimeout(() => toast.classList.remove('is-visible'), duration)
 }
+
+/**
+ * 运行期兜底：未捕获错误与未处理的 Promise 拒绝。
+ *
+ * 视口就绪前把原因写进加载层，就绪后改用 toast，
+ * 避免一次偶发错误把已经渲染好的场景替换成错误页。
+ */
+let viewerReady = false
+
+function reportRuntimeError(reason: unknown): void {
+  const message = reason instanceof Error ? reason.message : String(reason ?? '未知错误')
+  if (viewerReady) {
+    showToast(`运行出错：${message}`, 4200)
+    return
+  }
+  showError(message)
+}
+
+window.addEventListener('error', (event) => {
+  console.error('[app] 未捕获错误', event.error ?? event.message)
+  reportRuntimeError(event.error ?? event.message)
+})
+
+window.addEventListener('unhandledrejection', (event) => {
+  console.error('[app] 未处理的 Promise 拒绝', event.reason)
+  reportRuntimeError(event.reason)
+})
 
 /** 影像：静态托管直连 Cesium Ion；本地走缓存中间件。 */
 function createOverlays(): ImageryLayerOptions[] {
@@ -109,19 +131,13 @@ function createTerrainOptions(): TerrainOptions {
       type: 'cesium-ion',
       apiToken: ION_TOKEN,
       assetId: CESIUM_TERRAIN_ASSET_ID,
-      tileLoading: {
-        enableTileSplitting: false,
-        imageryResolution: 256
-      }
+      tileLoading: { enableTileSplitting: false, imageryResolution: 256 }
     }
   }
   return {
     type: 'url',
     url: assetPath('terrain-cache/layer.json'),
-    tileLoading: {
-      enableTileSplitting: false,
-      imageryResolution: 256
-    }
+    tileLoading: { enableTileSplitting: false, imageryResolution: 256 }
   }
 }
 
@@ -134,12 +150,12 @@ function mountWaterEditor(viewer: Viewer): void {
 }
 
 async function boot(): Promise<void> {
-  setLoader(14, '读取本地地形缓存配置…')
-  setLoader(38, '连接本地地形与影像缓存…')
+  setLoader(14, '读取地形缓存配置…')
+  setLoader(38, '连接地形与影像服务…')
 
   let viewer: Viewer
   try {
-    viewer = new tellux.Viewer(requireElement<HTMLElement>('#viewer'), {
+    viewer = new tellux.Viewer(requireElement<HTMLElement>(domId('viewer')), {
       dracoDecoderPath: assetPath('draco/'),
       clock: {
         currentTime: minutesToSceneDate(DEFAULT_TIME_MINUTES),
@@ -209,6 +225,7 @@ async function boot(): Promise<void> {
 
   mountWaterEditor(viewer)
   initUiShell()
+  viewerReady = true
 
   const clockValue = requireElement('#clock-status span')
   initCloudControls({
@@ -223,9 +240,9 @@ async function boot(): Promise<void> {
   hideLoader(260)
 
   // 底部相机读数：低频刷新，避免每帧写 DOM。
-  const coordLon = requireElement('#coord-lon')
-  const coordLat = requireElement('#coord-lat')
-  const coordAlt = requireElement('#coord-alt')
+  const coordLon = requireElement(domId('coord-lon'))
+  const coordLat = requireElement(domId('coord-lat'))
+  const coordAlt = requireElement(domId('coord-alt'))
   const readoutTimer = window.setInterval(() => {
     const { destination } = viewer.camera.getState()
     coordLon.textContent = formatCoordinate(destination.longitude, 'E', 'W')

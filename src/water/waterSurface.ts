@@ -9,7 +9,7 @@
  * 切平面局部坐标约定（由 `viewer.cartographicToMatrix4` 给出）：
  * **+X = 西、+Y = 上、+Z = 北**；网格顶点使用 `(x=-east, y=height, z=north)`。
  *
- * 模拟纹理契约（详见 `./types.ts`）：RGBA，R=水深(m)、G=东向流速(m/s)、
+ * 模拟纹理格式（见 `./types.ts`）：RGBA，R=水深(m)、G=东向流速(m/s)、
  * B=北向流速(m/s)、A=相对 baseElevation 的地形高程(m)；
  * `uv = (east/size + 0.5, north/size + 0.5)`（v=0 南、v=1 北）。
  */
@@ -106,6 +106,42 @@ function buildWaterGeometry(sizeMeters: number, segments: number): THREE.BufferG
   return geometry
 }
 
+/**
+ * 水面材质用到的全部 uniform。
+ *
+ * 写成显式键而不是 `Record<string, IUniform>`：开启 `noUncheckedIndexedAccess` 后，
+ * 索引签名会返回 `IUniform | undefined`，逼着每处读写都判空；这里键是确定的。
+ */
+type WaterSurfaceUniforms = Record<
+  | 'uStateTexture'
+  | 'uSimResolution'
+  | 'uSize'
+  | 'uLift'
+  | 'uNormalBroad'
+  | 'uNormalFine'
+  | 'uFoamTexture'
+  | 'uTime'
+  | 'uShimmer'
+  | 'uGlint'
+  | 'uReflection'
+  | 'uRipple'
+  | 'uRippleScale'
+  | 'uFlowSpeed'
+  | 'uFoam'
+  | 'uClarity'
+  | 'uOpacity'
+  | 'uSunLocal'
+  | 'uSunColor'
+  | 'uSkyZenith'
+  | 'uSkyHorizon'
+  | 'uDeepColor'
+  | 'uShallowColor'
+  | 'uFoamColor'
+  | 'uGlintStrength'
+  | 'uViewRotation',
+  THREE.IUniform
+>
+
 /** 水面渲染对象。模拟分辨率变化时由调用方销毁并重建。 */
 export class WaterSurface {
   /** 场景中的水面网格（已加入 `viewer.scene.raw`）。 */
@@ -115,7 +151,7 @@ export class WaterSurface {
   private readonly material: THREE.ShaderMaterial
   private readonly geometry: THREE.BufferGeometry
   private readonly textures: WaterDetailTextures
-  private readonly uniforms: Record<string, THREE.IUniform>
+  private readonly uniforms: WaterSurfaceUniforms
   private readonly segments: number
   private readonly simResolution: number
 
@@ -223,7 +259,7 @@ export class WaterSurface {
   /** 显隐（水体总开关 / 退出水体编辑）。 */
   setEnabled(enabled: boolean): void {
     if (this.disposed) return
-    this.enabled = enabled === true
+    this.enabled = enabled
     this.mesh.visible = this.enabled
   }
 
@@ -233,18 +269,18 @@ export class WaterSurface {
     this.uniforms.uStateTexture.value = texture
   }
 
-  /** 设置外观参数；越界值会被裁剪到契约范围。 */
+  /** 设置外观参数；越界值会被裁剪到允许范围。 */
   setVisual(visual: WaterVisualSettings): void {
     if (this.disposed) return
     this.visual = {
-      shimmer: clamp(visual.shimmer, 0, 3),
+      shimmer: clamp(visual.shimmer ?? VISUAL_DEFAULTS.shimmer, 0, 3),
       glint: clamp(visual.glint ?? VISUAL_DEFAULTS.glint, 0.3, 2.5),
       reflection: clamp(visual.reflection ?? VISUAL_DEFAULTS.reflection, 0, 1.5),
-      ripple: clamp(visual.ripple, 0, 2),
+      ripple: clamp(visual.ripple ?? VISUAL_DEFAULTS.ripple, 0, 2),
       rippleScale: clamp(visual.rippleScale ?? VISUAL_DEFAULTS.rippleScale, 0.4, 2.5),
       flowSpeed: clamp(visual.flowSpeed ?? VISUAL_DEFAULTS.flowSpeed, 0, 2),
       foam: clamp(visual.foam ?? VISUAL_DEFAULTS.foam, 0, 2),
-      clarity: clamp(visual.clarity, 0, 1),
+      clarity: clamp(visual.clarity ?? VISUAL_DEFAULTS.clarity, 0, 1),
       opacity: clamp(visual.opacity ?? VISUAL_DEFAULTS.opacity, 0, 1)
     }
     this.uniforms.uShimmer.value = this.visual.shimmer
@@ -271,9 +307,7 @@ export class WaterSurface {
   update(dtSeconds: number): void {
     if (this.disposed || !this.enabled) return
     const step =
-      Number.isFinite(dtSeconds) && dtSeconds > 0
-        ? Math.min(dtSeconds, MAX_STEP_SECONDS)
-        : 0
+      Number.isFinite(dtSeconds) && dtSeconds > 0 ? Math.min(dtSeconds, MAX_STEP_SECONDS) : 0
     this.time += step
     this.uniforms.uTime.value = this.time
   }

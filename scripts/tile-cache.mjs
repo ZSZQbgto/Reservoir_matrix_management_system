@@ -24,7 +24,8 @@ const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
 const CESIUM_ASSET_ID = 1
 const CESIUM_ENDPOINT = `https://api.cesium.com/v1/assets/${CESIUM_ASSET_ID}/endpoint`
-const ARCGIS_IMAGERY = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile'
+const ARCGIS_IMAGERY =
+  'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile'
 const TERRAIN_CONTENT_TYPE =
   'application/vnd.quantized-mesh;extensions=octvertexnormals-watermask-metadata'
 const IMAGERY_CONTENT_TYPE = 'image/jpeg'
@@ -562,7 +563,9 @@ export async function prefetchRegion(options = {}) {
       skipped += 1
     } else {
       try {
-        const { response, buffer } = await fetchBuffer(`${ARCGIS_IMAGERY}/${task.level}/${task.y}/${task.x}`)
+        const { response, buffer } = await fetchBuffer(
+          `${ARCGIS_IMAGERY}/${task.level}/${task.y}/${task.x}`
+        )
         if (response.ok) {
           await writeFileAtomic(filePath, buffer)
           downloaded += 1

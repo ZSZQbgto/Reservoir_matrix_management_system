@@ -6,9 +6,9 @@
  * 缺失时会出现“只有水库附近有地形、没有卫星底图”。因此分两段预热：
  *
  * 1. 全球低层级：地形 0-4、影像 0-4（数量小，保证地球/远景有底图）；
- * 2. 目标区域高层级：地形 5-14、影像 5-15（覆盖初始视角与 8 km 模拟域）。
+ * 2. 目标区域高层级：地形 5-14、影像 5-15（覆盖初始视角与模拟域）。
  *
- * 区域中心固定为项目的 116.77, 36.02；区域边长、最大层级与并发可用环境变量
+ * 区域中心取 `DEFAULT_REGION`（116.77, 36.02）；区域边长、最大层级与并发可用环境变量
  * PREFETCH_SIZE / PREFETCH_TERRAIN_MAX / PREFETCH_IMAGERY_MAX / PREFETCH_CONCURRENCY 覆盖。
  */
 import fs from 'node:fs'
@@ -41,13 +41,21 @@ function readNumber(key, fallback) {
 
 const token = readEnv('CESIUM_ION_TOKEN')
 if (!token) {
-  console.error('[cache-static] 未找到 CESIUM_ION_TOKEN（.env 或环境变量），无法下载 Cesium World Terrain。')
+  console.error(
+    '[cache-static] 未找到 CESIUM_ION_TOKEN（.env 或环境变量），无法下载 Cesium World Terrain。'
+  )
   process.exit(1)
 }
 
 const sizeMeters = Math.max(1000, readNumber('PREFETCH_SIZE', DEFAULT_REGION.sizeMeters))
-const terrainMaxLevel = Math.max(GLOBAL_MAX_LEVEL, Math.round(readNumber('PREFETCH_TERRAIN_MAX', 14)))
-const imageryMaxLevel = Math.max(GLOBAL_MAX_LEVEL, Math.round(readNumber('PREFETCH_IMAGERY_MAX', 15)))
+const terrainMaxLevel = Math.max(
+  GLOBAL_MAX_LEVEL,
+  Math.round(readNumber('PREFETCH_TERRAIN_MAX', 14))
+)
+const imageryMaxLevel = Math.max(
+  GLOBAL_MAX_LEVEL,
+  Math.round(readNumber('PREFETCH_IMAGERY_MAX', 15))
+)
 const concurrency = Math.max(1, Math.min(16, Math.round(readNumber('PREFETCH_CONCURRENCY', 8))))
 const common = { root, token, concurrency }
 

@@ -176,6 +176,20 @@ test('水源字段归一化与数量上限', () => {
   assert.equal(state.sources[4].radius, 3000)
 })
 
+test('水源 id 只接受安全字符', () => {
+  const state = normalizeWaterState({
+    sources: [
+      { id: 'wsrc_ok-1', longitude: 116.77, latitude: 36.01 },
+      { id: 'bad" onclick="alert(1)', longitude: 116.78, latitude: 36.01 },
+      { id: 'x'.repeat(65), longitude: 116.79, latitude: 36.01 }
+    ]
+  })
+  assert.equal(state.sources[0].id, 'wsrc_ok-1')
+  // 非法 id 会被换成新生成的 id，避免进入 DOM 属性。
+  assert.equal(state.sources[1].id.startsWith('wsrc_'), true)
+  assert.equal(state.sources[2].id.startsWith('wsrc_'), true)
+})
+
 test('模拟域固定为 116.77, 36.02 的 8 km × 8 km', () => {
   const migrated = normalizeWaterState({
     domain: { longitude: 10, latitude: 10, sizeMeters: 1234 }

@@ -147,11 +147,7 @@ export function sunStateForDirection(directionEnu: THREE.Vector3): SunState {
 }
 
 /** 由高度角直接构造光照状态（方位角可任填）。 */
-function sunStateForAltitude(
-  direction: THREE.Vector3,
-  altitude: number,
-  azimuth = 0
-): SunState {
+function sunStateForAltitude(direction: THREE.Vector3, altitude: number, azimuth = 0): SunState {
   const { dayWeight, duskWeight, nightWeight } = sunWeightsForAltitude(altitude)
   return {
     direction: direction.clone().normalize(),
@@ -169,7 +165,7 @@ function sunStateForAltitude(
     sunGlintColor: colorFromRgb(
       mixRgb(DAY.sun, DUSK.sun, NIGHT.sun, dayWeight, duskWeight, nightWeight)
     ),
-    glintStrength: dayWeight * 1 + duskWeight * 0.55 + nightWeight * 0.06,
+    glintStrength: dayWeight + duskWeight * 0.55 + nightWeight * 0.06,
     waterDeep: colorFromRgb(
       mixRgb(DAY.deep, DUSK.deep, NIGHT.deep, dayWeight, duskWeight, nightWeight)
     ),
@@ -190,7 +186,7 @@ function julianDay(date: Date): number {
 /**
  * NOAA 简化太阳位置：返回 ENU 单位方向 [east, up, north]。
  *
- * 精度约 0.01°（未含大气折射），对本项目的太阳高光/天空配色足够。
+ * 精度约 0.01°（未含大气折射），对太阳高光/天空配色足够。
  */
 export function computeSunDirectionENU(
   date: Date,
@@ -227,8 +223,7 @@ export function computeSunDirectionENU(
 
   // 方位角：自北向东，顺时针为正。
   const sinAzimuth = -Math.cos(declination) * Math.sin(hourAngle)
-  const cosAzimuthNumerator =
-    Math.sin(declination) - Math.sin(altitude) * Math.sin(latitudeRad)
+  const cosAzimuthNumerator = Math.sin(declination) - Math.sin(altitude) * Math.sin(latitudeRad)
   const cosAzimuthDenominator = Math.max(Math.cos(latitudeRad), 1e-6)
   const azimuth = Math.atan2(sinAzimuth, cosAzimuthNumerator / cosAzimuthDenominator)
 

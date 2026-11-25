@@ -16,6 +16,14 @@ interface SourceVisual {
   ring: RibbonLine
   label: HTMLDivElement
   ballWorld: THREE.Vector3
+  /** 上一次写入 DOM 的标签状态：每帧只在变化时重写，省掉样式重算与文本节点重建。 */
+  labelState: {
+    x: number
+    y: number
+    hidden: boolean
+    selected: boolean
+    name: string
+  }
 }
 
 export interface SourceMarkerOptions {
@@ -115,11 +123,11 @@ class RibbonLine {
     for (let i = 0; i < count; i++) {
       const previous = this.closed ? (i - 1 + count) % count : Math.max(0, i - 1)
       const next = this.closed ? (i + 1) % count : Math.min(count - 1, i + 1)
-      const x = this.centerline[i * 3]
-      const y = this.centerline[i * 3 + 1]
-      const z = this.centerline[i * 3 + 2]
-      const dx = this.centerline[next * 3] - this.centerline[previous * 3]
-      const dz = this.centerline[next * 3 + 2] - this.centerline[previous * 3 + 2]
+      const x = this.centerline[i * 3] ?? 0
+      const y = this.centerline[i * 3 + 1] ?? 0
+      const z = this.centerline[i * 3 + 2] ?? 0
+      const dx = (this.centerline[next * 3] ?? 0) - (this.centerline[previous * 3] ?? 0)
+      const dz = (this.centerline[next * 3 + 2] ?? 0) - (this.centerline[previous * 3 + 2] ?? 0)
       const length = Math.hypot(dx, dz) || 1
       const nx = -dz / length
       const nz = dx / length
@@ -139,7 +147,7 @@ class RibbonLine {
 /**
  * 水源标记层：青色小球 + 贴地半径圆环 + DOM 名称标签。
  *
- * 标记只在「水体编辑」模式显示；小球与圆环按屏幕像素保持可见尺寸，
+ * 标记只在编辑模式可见；小球与圆环按屏幕像素保持可见尺寸，
  * 圆环逐点采样地形高度贴地。
  */
 export class SourceMarkers {
@@ -151,7 +159,6 @@ export class SourceMarkers {
   private visible = true
   private selectedId: string | null = null
   private projection: LocalProjection | null = null
-  private drapeToken = 0
 
   constructor(viewer: Viewer, options: SourceMarkerOptions) {
     this.viewer = viewer
@@ -215,14 +222,14 @@ export class SourceMarkers {
   settleSource(source: WaterSource): void {
     const visual = this.visuals.get(source.id)
     if (!visual) return
-    this.drapeRing(visual, ++this.drapeToken).catch(() => {})
+    this.drapeRing(visual)
   }
 
   /** 每帧更新标签位置、小球屏幕尺寸与圆环像素宽度。 */
   updateFrame(camera: THREE.PerspectiveCamera, width: number, height: number): void {
     if (!this.visible || width <= 0 || height <= 0) return
     const cameraPosition = camera.position
-    const focal = height / 2 / Math.tan(((camera.fov * Math.PI) / 180) / 2)
+    const focal = height / 2 / Math.tan((camera.fov * Math.PI) / 180 / 2)
     for (const visual of this.visuals.values()) {
       const { source, ball, label } = visual
       const point = visual.ballWorld
@@ -232,15 +239,37 @@ export class SourceMarkers {
       // 圆环局部坐标即为米，屏幕像素宽换算成世界米。
       visual.ring.setWidth((RIBBON_PIXEL_WIDTH * distance) / focal)
       const screen = this.project(point, camera, width, height)
+      const labelState = visual.labelState
       if (!screen || !this.isVisiblePoint(point, cameraPosition)) {
-        label.hidden = true
+        if (!labelState.hidden) {
+          label.hidden = true
+          labelState.hidden = true
+        }
         continue
       }
-      label.hidden = false
-      label.style.left = `${Math.round(screen.x)}px`
-      label.style.top = `${Math.round(screen.y)}px`
-      label.dataset.selected = this.selectedId === source.id ? 'true' : 'false'
-      label.textContent = source.name
+      if (labelState.hidden) {
+        label.hidden = false
+        labelState.hidden = false
+      }
+      const x = Math.round(screen.x)
+      const y = Math.round(screen.y)
+      if (x !== labelState.x) {
+        label.style.left = `${x}px`
+        labelState.x = x
+      }
+      if (y !== labelState.y) {
+        label.style.top = `${y}px`
+        labelState.y = y
+      }
+      const selected = this.selectedId === source.id
+      if (selected !== labelState.selected) {
+        label.dataset.selected = selected ? 'true' : 'false'
+        labelState.selected = selected
+      }
+      if (source.name !== labelState.name) {
+        label.textContent = source.name
+        labelState.name = source.name
+      }
     }
   }
 
@@ -318,7 +347,8 @@ export class SourceMarkers {
       ballMaterial,
       ring,
       label,
-      ballWorld: new THREE.Vector3()
+      ballWorld: new THREE.Vector3(),
+      labelState: { x: Number.NaN, y: Number.NaN, hidden: false, selected: false, name: '' }
     }
   }
 
@@ -362,13 +392,11 @@ export class SourceMarkers {
   }
 
   private drapeAllRings(): void {
-    const token = ++this.drapeToken
-    for (const visual of this.visuals.values()) {
-      this.drapeRing(visual, token).catch(() => {})
-    }
+    for (const visual of this.visuals.values()) this.drapeRing(visual)
   }
 
-  private async drapeRing(visual: SourceVisual, token: number): Promise<void> {
+  /** 逐点采样地形高度并贴合圆环；采样失败时保留平面圆环，只告警不抛错。 */
+  private drapeRing(visual: SourceVisual): void {
     const { source } = visual
     const projection = this.projection
     if (!projection || !Number.isFinite(source.radius) || source.radius <= 0) return
@@ -385,10 +413,10 @@ export class SourceMarkers {
     let heights: (number | undefined)[]
     try {
       heights = this.viewer.sampleHeight(points)
-    } catch {
+    } catch (error) {
+      console.warn('[SourceMarkers] 地形采样失败，圆环保留平面兜底', error)
       return
     }
-    if (token !== this.drapeToken) return
     const firstHit = heights.find((height) => typeof height === 'number')
     const groundLevel = source.groundLevel ?? firstHit
     if (typeof groundLevel !== 'number' || !Number.isFinite(groundLevel)) return
@@ -465,10 +493,8 @@ export class DomainBoundary {
   /** 每帧按相机距离更新屏幕像素宽度。 */
   update(camera: THREE.PerspectiveCamera, viewportHeight: number): void {
     if (!this.visible || viewportHeight <= 0) return
-    const distance = camera.position.distanceTo(
-      this.ribbon.mesh.getWorldPosition(this.worldCenter)
-    )
-    const focal = viewportHeight / 2 / Math.tan(((camera.fov * Math.PI) / 180) / 2)
+    const distance = camera.position.distanceTo(this.ribbon.mesh.getWorldPosition(this.worldCenter))
+    const focal = viewportHeight / 2 / Math.tan((camera.fov * Math.PI) / 180 / 2)
     this.ribbon.setWidth((RIBBON_PIXEL_WIDTH * distance) / focal)
   }
 
@@ -522,6 +548,7 @@ export class DomainBoundary {
 
     for (let i = 0; i < total; i++) {
       const local = points[i]
+      if (!local) continue
       const dx = (local.longitude - domain.origin.longitude) * projection.mPerDegLon
       const dz = (local.latitude - domain.origin.latitude) * projection.mPerDegLat
       const height = heights[i]

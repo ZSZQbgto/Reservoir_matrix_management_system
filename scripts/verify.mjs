@@ -82,11 +82,15 @@ async function waitFor(fn, timeoutMs, label, intervalMs = 200) {
 
 async function startDevServer() {
   const viteBin = join(root, 'node_modules', 'vite', 'bin', 'vite.js')
-  const child = spawn(process.execPath, [viteBin, '--host', '127.0.0.1', '--port', String(port), '--strictPort'], {
-    cwd: root,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, FORCE_COLOR: '0' }
-  })
+  const child = spawn(
+    process.execPath,
+    [viteBin, '--host', '127.0.0.1', '--port', String(port), '--strictPort'],
+    {
+      cwd: root,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, FORCE_COLOR: '0' }
+    }
+  )
   let output = ''
   child.stdout?.on('data', (chunk) => {
     output += chunk.toString()
@@ -116,7 +120,9 @@ async function startDevServer() {
 }
 
 async function main() {
-  const token = readEnvValue('CESIUM_ION_TOKEN')
+  // --ui：只跑不依赖地形瓦片的界面检查（离线、无 token 也能跑）。
+  const uiOnly = process.argv.includes('--ui')
+  const token = uiOnly ? '' : readEnvValue('CESIUM_ION_TOKEN')
   const chromePath = findChrome()
   if (!chromePath) {
     console.error('未找到 Chrome / Edge。请用 CHROME_PATH 环境变量指定浏览器可执行文件。')
@@ -145,7 +151,7 @@ async function main() {
     const externalTileRequests = []
     page.on('request', (request) => {
       const requestUrl = request.url()
-      if (/assets\.ion\.cesium\.com|api\.cesium\.com|arcgisonline\.com|tianditu|maptiler/.test(requestUrl)) {
+      if (/assets\.ion\.cesium\.com|api\.cesium\.com|arcgisonline\.com|maptiler/.test(requestUrl)) {
         externalTileRequests.push(requestUrl)
       }
     })
@@ -172,7 +178,10 @@ async function main() {
     })
     await check('地形 / 影像经由本地缓存端点加载', async () => {
       const terrain = await page.evaluate(() => window.viewer.terrain.current)
-      assert(terrain && terrain.type === 'url', `地形源不是本地缓存 URL：${JSON.stringify(terrain)}`)
+      assert(
+        terrain && terrain.type === 'url',
+        `地形源不是本地缓存 URL：${JSON.stringify(terrain)}`
+      )
       assert(
         String(terrain.url).includes('/terrain-cache/'),
         `地形 URL 未指向本地缓存：${terrain.url}`
@@ -187,9 +196,18 @@ async function main() {
     })
 
     await check('场景模式默认显示场景控制台', async () => {
-      assert(await page.evaluate(() => !document.querySelector('#console').hidden), '场景控制台不可见')
-      assert(await page.evaluate(() => document.querySelector('#water-left').hidden), '水体左栏不应显示')
-      assert(await page.evaluate(() => window.__waterEditor.getMode() === 'scene'), '当前模式不是 scene')
+      assert(
+        await page.evaluate(() => !document.querySelector('#console').hidden),
+        '场景控制台不可见'
+      )
+      assert(
+        await page.evaluate(() => document.querySelector('#water-left').hidden),
+        '水体左栏不应显示'
+      )
+      assert(
+        await page.evaluate(() => window.__waterEditor.getMode() === 'scene'),
+        '当前模式不是 scene'
+      )
     })
 
     await check('体积云 / 云层细节参数联动', async () => {
@@ -284,7 +302,7 @@ async function main() {
         setRange('#cloud-sun-iterations', 1)
         setRange('#cloud-scattering', 1.4)
         setRange('#cloud-absorption', 0.1)
-        setRange('#cloud-turbulence', 500)
+        setRange('#cloud-turbulence-displacement', 500)
       })
       const tuned = await page.evaluate(() => {
         const effect = window.viewer.atmosphere.cloudsEffect
@@ -326,7 +344,7 @@ async function main() {
         setRange('#cloud-sun-iterations', 2)
         setRange('#cloud-scattering', 1)
         setRange('#cloud-absorption', 0)
-        setRange('#cloud-turbulence', 350)
+        setRange('#cloud-turbulence-displacement', 350)
         setRange('#coverage', 62)
       })
     })
@@ -338,10 +356,22 @@ async function main() {
       await check('切换到水体编辑模式', async () => {
         await page.click('#mode-water')
         await page.waitForFunction("document.body.dataset.mode === 'water'", { timeout: 15000 })
-        assert(await page.evaluate(() => document.querySelector('#water-left').hidden === false), '水体左栏未显示')
-        assert(await page.evaluate(() => document.querySelector('#water-right').hidden === false), '水体右栏未显示')
-        assert(await page.evaluate(() => document.querySelector('#console').hidden === true), '场景控制台未隐藏')
-        assert(await page.evaluate(() => window.__waterEditor.getMode() === 'water'), '编辑器模式未切换')
+        assert(
+          await page.evaluate(() => document.querySelector('#water-left').hidden === false),
+          '水体左栏未显示'
+        )
+        assert(
+          await page.evaluate(() => document.querySelector('#water-right').hidden === false),
+          '水体右栏未显示'
+        )
+        assert(
+          await page.evaluate(() => document.querySelector('#console').hidden === true),
+          '场景控制台未隐藏'
+        )
+        assert(
+          await page.evaluate(() => window.__waterEditor.getMode() === 'water'),
+          '编辑器模式未切换'
+        )
       })
 
       await check('模拟域构建完成（地形采样）', async () => {
@@ -377,16 +407,16 @@ async function main() {
           }
         })
         assert(serverCached, '模拟域地形未写入服务器本地缓存')
-        assert(serverCached.resolution === 97 && serverCached.sizeMeters === 8000, '服务器本地缓存参数异常')
+        assert(
+          serverCached.resolution === 97 && serverCached.sizeMeters === 8000,
+          '服务器本地缓存参数异常'
+        )
         assert(serverCached.heightsLength > 40000, '服务器本地缓存高度场过小')
       })
 
       await check('用鼠标在地形上放置水源', async () => {
         await page.click('#water-add-source')
-        await page.waitForFunction(
-          "document.body.dataset.placing === 'true'",
-          { timeout: 5000 }
-        )
+        await page.waitForFunction("document.body.dataset.placing === 'true'", { timeout: 5000 })
         const point = await page.evaluate(() => {
           const domain = window.__waterEditor.getDomain()
           const vector = window.viewer.cartographicToVector3({
@@ -413,10 +443,7 @@ async function main() {
           typeof sources[0].targetLevel === 'number' && typeof sources[0].groundLevel === 'number',
           '新水源缺少地面高程 / 目标水位'
         )
-        assert(
-          sources[0].targetLevel > sources[0].groundLevel,
-          '目标水位应高于地面高程'
-        )
+        assert(sources[0].targetLevel > sources[0].groundLevel, '目标水位应高于地面高程')
         await page.keyboard.press('Escape')
       })
 
@@ -424,7 +451,9 @@ async function main() {
         const stats = await waitFor(
           async () => {
             const value = await page.evaluate(() => window.__waterEditor.getStats())
-            return value && value.steps > 60 && value.wetCells > 0 && value.maxDepth > 0 ? value : null
+            return value && value.steps > 60 && value.wetCells > 0 && value.maxDepth > 0
+              ? value
+              : null
           },
           90000,
           '浅水模拟产生水面'
@@ -441,12 +470,21 @@ async function main() {
         const pausedA = await page.evaluate(() => window.__waterEditor.getStats())
         await page.waitForTimeout(1300)
         const pausedB = await page.evaluate(() => window.__waterEditor.getStats())
-        assert(Math.abs(pausedB.steps - pausedA.steps) <= 2, `暂停后 steps 仍在增长：${pausedA.steps} -> ${pausedB.steps}`)
-        assert(await page.evaluate(() => window.__waterEditor.getState().sim.paused === true), '暂停状态未写入')
+        assert(
+          Math.abs(pausedB.steps - pausedA.steps) <= 2,
+          `暂停后 steps 仍在增长：${pausedA.steps} -> ${pausedB.steps}`
+        )
+        assert(
+          await page.evaluate(() => window.__waterEditor.getState().sim.paused === true),
+          '暂停状态未写入'
+        )
         await page.click('#water-pause')
         await page.waitForTimeout(1300)
         const resumed = await page.evaluate(() => window.__waterEditor.getStats())
-        assert(resumed.steps > pausedB.steps + 10, `继续后 steps 未恢复增长：${pausedB.steps} -> ${resumed.steps}`)
+        assert(
+          resumed.steps > pausedB.steps + 10,
+          `继续后 steps 未恢复增长：${pausedB.steps} -> ${resumed.steps}`
+        )
       })
 
       await check('水面精细外观参数联动', async () => {
@@ -487,9 +525,15 @@ async function main() {
         const reset = await page.evaluate(() => window.__waterEditor.getState().visual)
         assert(Math.abs(reset.shimmer - 1) < 0.001, `恢复默认失败：shimmer=${reset.shimmer}`)
         assert(Math.abs(reset.glint - 1) < 0.001, `恢复默认失败：glint=${reset.glint}`)
-        assert(Math.abs(reset.reflection - 1) < 0.001, `恢复默认失败：reflection=${reset.reflection}`)
+        assert(
+          Math.abs(reset.reflection - 1) < 0.001,
+          `恢复默认失败：reflection=${reset.reflection}`
+        )
         assert(Math.abs(reset.ripple - 1) < 0.001, `恢复默认失败：ripple=${reset.ripple}`)
-        assert(Math.abs(reset.rippleScale - 1) < 0.001, `恢复默认失败：rippleScale=${reset.rippleScale}`)
+        assert(
+          Math.abs(reset.rippleScale - 1) < 0.001,
+          `恢复默认失败：rippleScale=${reset.rippleScale}`
+        )
         assert(Math.abs(reset.flowSpeed - 1) < 0.001, `恢复默认失败：flowSpeed=${reset.flowSpeed}`)
         assert(Math.abs(reset.foam - 1) < 0.001, `恢复默认失败：foam=${reset.foam}`)
         assert(Math.abs(reset.clarity - 0.62) < 0.001, `恢复默认失败：clarity=${reset.clarity}`)
@@ -541,12 +585,20 @@ async function main() {
       await check('水体总开关', async () => {
         await page.evaluate(() => document.querySelector('#water-toggle').click())
         await page.waitForTimeout(400)
-        assert(await page.evaluate(() => window.__waterEditor.getState().enabled === false), '关闭状态未写入')
-        const pill = await page.evaluate(() => document.querySelector('#water-status-pill span').textContent)
+        assert(
+          await page.evaluate(() => window.__waterEditor.getState().enabled === false),
+          '关闭状态未写入'
+        )
+        const pill = await page.evaluate(
+          () => document.querySelector('#water-status-pill span').textContent
+        )
         assert(pill.includes('已关闭'), `状态胶囊未显示已关闭：${pill}`)
         await page.evaluate(() => document.querySelector('#water-toggle').click())
         await page.waitForTimeout(300)
-        assert(await page.evaluate(() => window.__waterEditor.getState().enabled === true), '重新开启失败')
+        assert(
+          await page.evaluate(() => window.__waterEditor.getState().enabled === true),
+          '重新开启失败'
+        )
       })
 
       await check('拖动水源更新位置', async () => {
@@ -590,10 +642,7 @@ async function main() {
 
       await check('持久化与刷新恢复', async () => {
         await page.click('#water-add-source')
-        await page.waitForFunction(
-          "document.body.dataset.placing === 'true'",
-          { timeout: 5000 }
-        )
+        await page.waitForFunction("document.body.dataset.placing === 'true'", { timeout: 5000 })
         const point = await page.evaluate(() => {
           const domain = window.__waterEditor.getDomain()
           const vector = window.viewer.cartographicToVector3({
@@ -698,10 +747,7 @@ async function main() {
         const source = await page.evaluate(() => window.__waterEditor.getDomainSource())
         assert(source === 'cache', `模拟域未从服务器本地存储恢复：${source}`)
         const projection = await page.evaluate(() => window.__waterEditor.getProjection())
-        assert(
-          projection && projection.sizeMeters === 8000,
-          '服务器本地存储恢复后缺少模拟域投影'
-        )
+        assert(projection && projection.sizeMeters === 8000, '服务器本地存储恢复后缺少模拟域投影')
         const localRefilled = await page.evaluate(
           () => localStorage.getItem('tellux-water-domain-v1') !== null
         )
@@ -746,18 +792,30 @@ async function main() {
       await check('切回浏览模式后模拟继续推进', async () => {
         await page.click('#mode-scene')
         await page.waitForTimeout(800)
-        assert(await page.evaluate(() => document.querySelector('#console').hidden === false), '场景控制台未恢复')
-        assert(await page.evaluate(() => document.querySelector('#water-left').hidden === true), '水体面板未隐藏')
+        assert(
+          await page.evaluate(() => document.querySelector('#console').hidden === false),
+          '场景控制台未恢复'
+        )
+        assert(
+          await page.evaluate(() => document.querySelector('#water-left').hidden === true),
+          '水体面板未隐藏'
+        )
         const before = await page.evaluate(() => window.__waterEditor.getStats())
         await page.waitForTimeout(1600)
         const after = await page.evaluate(() => window.__waterEditor.getStats())
-        assert(after.steps > before.steps, `浏览模式下模拟未继续：${before.steps} -> ${after.steps}`)
+        assert(
+          after.steps > before.steps,
+          `浏览模式下模拟未继续：${before.steps} -> ${after.steps}`
+        )
         await page.screenshot({ path: join(outDir, 'water-scene-mode.png') })
       })
     }
 
     await check('运行期间无控制台错误', async () => {
-      assert(consoleErrors.length === 0, `存在 ${consoleErrors.length} 条控制台错误：${consoleErrors[0]}`)
+      assert(
+        consoleErrors.length === 0,
+        `存在 ${consoleErrors.length} 条控制台错误：${consoleErrors[0]}`
+      )
     })
   } finally {
     if (browser) await browser.close()

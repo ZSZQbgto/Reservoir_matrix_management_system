@@ -9,8 +9,9 @@
  * 自定义数值，保证滑杆不会被预设悄悄覆盖。
  */
 import type { Viewer } from 'tellux'
-import { requireElement, syncRangeFill } from './dom'
-import { DEFAULT_TIME_MINUTES, formatClockTime, minutesToSceneDate } from './format'
+import { domId } from '../shared/domIds'
+import { requireElement, syncRangeFill } from '../shared/dom'
+import { DEFAULT_TIME_MINUTES, formatClockTime, minutesToSceneDate } from '../shared/format'
 import {
   CLOUD_TUNING_DEFAULTS,
   applyCloudTuning,
@@ -92,12 +93,7 @@ function writeCloudPrefs(prefs: CloudPrefs): void {
 }
 
 /** 把恢复的数值写回滑杆并触发一次 input，复用统一的事件处理。 */
-function setStoredRange(
-  input: HTMLInputElement,
-  value: unknown,
-  min: number,
-  max: number
-): void {
+function setStoredRange(input: HTMLInputElement, value: unknown, min: number, max: number): void {
   if (typeof value !== 'number' || !Number.isFinite(value)) return
   input.value = String(Math.min(max, Math.max(min, value)))
   input.dispatchEvent(new Event('input', { bubbles: true }))
@@ -114,44 +110,48 @@ export function initCloudControls(options: CloudControlsOptions): void {
   const clouds = viewer.scene.clouds
   const effect = resolveCloudsEffect(viewer)
 
-  const cloudStatus = requireElement('#cloud-status')
-  const cloudsToggle = requireElement<HTMLInputElement>('#clouds-toggle')
-  const coverage = requireElement<HTMLInputElement>('#coverage')
-  const coverageValue = requireElement<HTMLOutputElement>('#coverage-value')
-  const cloudAltitude = requireElement<HTMLInputElement>('#cloud-altitude')
-  const cloudAltitudeValue = requireElement<HTMLOutputElement>('#cloud-altitude-value')
-  const cloudHeight = requireElement<HTMLInputElement>('#cloud-height')
-  const cloudHeightValue = requireElement<HTMLOutputElement>('#cloud-height-value')
-  const cloudSpeed = requireElement<HTMLInputElement>('#cloud-speed')
-  const cloudSpeedValue = requireElement<HTMLOutputElement>('#cloud-speed-value')
-  const cloudDetail = requireElement<HTMLInputElement>('#cloud-detail')
-  const cloudTurbulence = requireElement<HTMLInputElement>('#cloud-turbulence')
-  const cloudHaze = requireElement<HTMLInputElement>('#cloud-haze')
-  const cloudLightShafts = requireElement<HTMLInputElement>('#cloud-light-shafts')
-  const cloudShadowQuality = requireElement<HTMLInputElement>('#cloud-shadow-quality')
-  const cloudShadowQualityValue = requireElement<HTMLOutputElement>('#cloud-shadow-quality-value')
-  const quality = requireElement<HTMLInputElement>('#quality')
-  const qualityValue = requireElement<HTMLOutputElement>('#quality-value')
-  const atmosphereToggle = requireElement<HTMLInputElement>('#atmosphere-toggle')
-  const localHour = requireElement<HTMLInputElement>('#local-hour')
-  const localHourValue = requireElement<HTMLOutputElement>('#local-hour-value')
+  const cloudStatus = requireElement(domId('cloud-status'))
+  const cloudsToggle = requireElement<HTMLInputElement>(domId('clouds-toggle'))
+  const coverage = requireElement<HTMLInputElement>(domId('coverage'))
+  const coverageValue = requireElement<HTMLOutputElement>(domId('coverage-value'))
+  const cloudAltitude = requireElement<HTMLInputElement>(domId('cloud-altitude'))
+  const cloudAltitudeValue = requireElement<HTMLOutputElement>(domId('cloud-altitude-value'))
+  const cloudHeight = requireElement<HTMLInputElement>(domId('cloud-height'))
+  const cloudHeightValue = requireElement<HTMLOutputElement>(domId('cloud-height-value'))
+  const cloudSpeed = requireElement<HTMLInputElement>(domId('cloud-speed'))
+  const cloudSpeedValue = requireElement<HTMLOutputElement>(domId('cloud-speed-value'))
+  const cloudDetail = requireElement<HTMLInputElement>(domId('cloud-detail'))
+  const cloudTurbulence = requireElement<HTMLInputElement>(domId('cloud-turbulence'))
+  const cloudHaze = requireElement<HTMLInputElement>(domId('cloud-haze'))
+  const cloudLightShafts = requireElement<HTMLInputElement>(domId('cloud-light-shafts'))
+  const cloudShadowQuality = requireElement<HTMLInputElement>(domId('cloud-shadow-quality'))
+  const cloudShadowQualityValue = requireElement<HTMLOutputElement>(
+    domId('cloud-shadow-quality-value')
+  )
+  const quality = requireElement<HTMLInputElement>(domId('quality'))
+  const qualityValue = requireElement<HTMLOutputElement>(domId('quality-value'))
+  const atmosphereToggle = requireElement<HTMLInputElement>(domId('atmosphere-toggle'))
+  const localHour = requireElement<HTMLInputElement>(domId('local-hour'))
+  const localHourValue = requireElement<HTMLOutputElement>(domId('local-hour-value'))
 
   // 云体与性能滑杆（底层 CloudsEffect 不可用时整组隐藏）。
-  const tuningSection = requireElement('#cloud-tuning')
-  const cloudMinStep = requireElement<HTMLInputElement>('#cloud-min-step')
-  const cloudMinStepValue = requireElement<HTMLOutputElement>('#cloud-min-step-value')
-  const cloudIterations = requireElement<HTMLInputElement>('#cloud-iterations')
-  const cloudIterationsValue = requireElement<HTMLOutputElement>('#cloud-iterations-value')
-  const cloudSunIterations = requireElement<HTMLInputElement>('#cloud-sun-iterations')
+  const tuningSection = requireElement(domId('cloud-tuning'))
+  const cloudMinStep = requireElement<HTMLInputElement>(domId('cloud-min-step'))
+  const cloudMinStepValue = requireElement<HTMLOutputElement>(domId('cloud-min-step-value'))
+  const cloudIterations = requireElement<HTMLInputElement>(domId('cloud-iterations'))
+  const cloudIterationsValue = requireElement<HTMLOutputElement>(domId('cloud-iterations-value'))
+  const cloudSunIterations = requireElement<HTMLInputElement>(domId('cloud-sun-iterations'))
   const cloudSunIterationsValue = requireElement<HTMLOutputElement>(
-    '#cloud-sun-iterations-value'
+    domId('cloud-sun-iterations-value')
   )
-  const cloudScattering = requireElement<HTMLInputElement>('#cloud-scattering')
-  const cloudScatteringValue = requireElement<HTMLOutputElement>('#cloud-scattering-value')
-  const cloudAbsorption = requireElement<HTMLInputElement>('#cloud-absorption')
-  const cloudAbsorptionValue = requireElement<HTMLOutputElement>('#cloud-absorption-value')
-  const cloudTurbulenceDisplacement = requireElement<HTMLInputElement>('#cloud-turbulence')
-  const cloudTurbulenceValue = requireElement<HTMLOutputElement>('#cloud-turbulence-value')
+  const cloudScattering = requireElement<HTMLInputElement>(domId('cloud-scattering'))
+  const cloudScatteringValue = requireElement<HTMLOutputElement>(domId('cloud-scattering-value'))
+  const cloudAbsorption = requireElement<HTMLInputElement>(domId('cloud-absorption'))
+  const cloudAbsorptionValue = requireElement<HTMLOutputElement>(domId('cloud-absorption-value'))
+  const cloudTurbulenceDisplacement = requireElement<HTMLInputElement>(
+    domId('cloud-turbulence-displacement')
+  )
+  const cloudTurbulenceValue = requireElement<HTMLOutputElement>(domId('cloud-turbulence-value'))
 
   const readTuningInputs = (): CloudTuning => ({
     minStepSize: Number(cloudMinStep.value),
@@ -191,7 +191,7 @@ export function initCloudControls(options: CloudControlsOptions): void {
     writeTuningOutputs(tuning)
   }
 
-  /** Tellux 应用云设置时会重套质量预设；这里重放用户的自定义数值。 */
+  /** Tellux 应用云设置时会重套质量预设；这里重放滑杆的自定义数值。 */
   const reapplyTuning = (): void => {
     if (effect) applyCloudTuning(effect, readTuningInputs())
   }
@@ -208,7 +208,8 @@ export function initCloudControls(options: CloudControlsOptions): void {
       detail: cloudDetail.checked,
       turbulence: cloudTurbulence.checked,
       haze: cloudHaze.checked,
-      shadow: SHADOW_PRESETS[Number(cloudShadowQuality.value)] ?? CLOUD_SCENE_DEFAULTS.shadowQuality,
+      shadow:
+        SHADOW_PRESETS[Number(cloudShadowQuality.value)] ?? CLOUD_SCENE_DEFAULTS.shadowQuality,
       tuning: effect ? readTuningInputs() : undefined
     })
   }
@@ -288,16 +289,16 @@ export function initCloudControls(options: CloudControlsOptions): void {
 
   cloudShadowQuality.addEventListener('input', () => {
     const index = Math.max(0, Math.min(SHADOW_PRESETS.length - 1, Number(cloudShadowQuality.value)))
-    clouds.shadow.quality = SHADOW_PRESETS[index]
+    clouds.shadow.quality = SHADOW_PRESETS[index] ?? CLOUD_SCENE_DEFAULTS.shadowQuality
     reapplyTuning()
-    cloudShadowQualityValue.textContent = SHADOW_LABELS[index]
+    cloudShadowQualityValue.textContent = SHADOW_LABELS[index] ?? ''
     persist()
   })
 
   quality.addEventListener('input', () => {
     const index = Math.max(0, Math.min(QUALITY_PRESETS.length - 1, Number(quality.value)))
-    clouds.quality = QUALITY_PRESETS[index]
-    qualityValue.textContent = QUALITY_LABELS[index]
+    clouds.quality = QUALITY_PRESETS[index] ?? CLOUD_SCENE_DEFAULTS.quality
+    qualityValue.textContent = QUALITY_LABELS[index] ?? ''
     // 质量预设有自己的分辨率/步进默认值：滑杆跟随预设，而不是继续覆盖它。
     if (effect) writeTuningInputs(readCloudTuning(effect))
     persist()
@@ -344,9 +345,9 @@ export function initCloudControls(options: CloudControlsOptions): void {
   cloudSpeed.value = String(CLOUD_SCENE_DEFAULTS.speed)
   cloudSpeedValue.textContent = `${CLOUD_SCENE_DEFAULTS.speed.toFixed(1)}×`
   quality.value = String(DEFAULT_QUALITY_INDEX)
-  qualityValue.textContent = QUALITY_LABELS[DEFAULT_QUALITY_INDEX]
+  qualityValue.textContent = QUALITY_LABELS[DEFAULT_QUALITY_INDEX] ?? ''
   cloudShadowQuality.value = String(DEFAULT_SHADOW_INDEX)
-  cloudShadowQualityValue.textContent = SHADOW_LABELS[DEFAULT_SHADOW_INDEX]
+  cloudShadowQualityValue.textContent = SHADOW_LABELS[DEFAULT_SHADOW_INDEX] ?? ''
   localHourValue.textContent = formatClockTime(DEFAULT_TIME_MINUTES)
   onTimeChange(DEFAULT_TIME_MINUTES)
 

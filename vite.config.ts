@@ -8,7 +8,7 @@ const rootDir = dirname(fileURLToPath(import.meta.url))
 /**
  * 站点基础路径。
  *
- * 本地 / 自建服务器：`/`；GitHub Pages 项目站点：`/<仓库名>/`。
+ * 本地 / 自建服务器：`/`；GitHub Pages 子路径站点：`/<仓库名>/`。
  * 由 CI 的 `BASE_PATH` 环境变量注入，构建产物里的资源、瓦片端点与运行时
  * `import.meta.env.BASE_URL` 都会使用同一前缀。
  */

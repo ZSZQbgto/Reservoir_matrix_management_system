@@ -4,7 +4,7 @@
  * 着色器全部以 WebGL1 风格书写（`varying` / `texture2D` / `gl_FragColor`），
  * three.js 的 ShaderMaterial 会自动把它们转成 GLSL ES 3.00；模拟 pass 里用到的
  * `texelFetch` 由 3.00 提供，因此要保证 three 走的是非 Raw 的 ShaderMaterial
- * 路径（本项目的 WebGLRenderer 满足这一点）。
+ * 路径（当前 WebGLRenderer 满足这一点）。
  *
  * 约定（与 `src/water/types.ts` 一致）：
  * - 纹理 `uv = ((i + 0.5) / N, (j + 0.5) / N)`，i 向东、j 向北，v=0 在南；
@@ -128,7 +128,7 @@ void main() {
  * 入流来自四个邻居通量纹理中朝向本格的通道；速度由净通量换算成 m/s。
  */
 export const DEPTH_FRAGMENT = /* glsl */ `
-#define MAX_SOURCES 8
+#define MAX_SOURCES __MAX_SOURCES__
 
 uniform sampler2D uState;
 uniform sampler2D uFlux;
@@ -144,6 +144,7 @@ uniform float uFallbackAmount;
 uniform float uHasCap;
 uniform float uCapRel;
 uniform float uMaxDepth;
+uniform float uMaxFlowSpeed;
 
 varying vec2 vUv;
 
@@ -208,17 +209,22 @@ void main() {
     velocity.y = (inSouth - flux.b) / (uCellWidth * newDepth);
   }
   float speed = length(velocity);
-  if (speed > 30.0) velocity *= 30.0 / speed;
+  // 与通量 pass 共用同一上限；写死 30 会让 maxFlowSpeed 调低后泡沫阈值与速度场不一致。
+  if (speed > uMaxFlowSpeed) velocity *= uMaxFlowSpeed / speed;
 
   gl_FragColor = vec4(newDepth, velocity.x, velocity.y, terrainRel);
 }
 `
 
 /**
- * 统计降采样：每 4x4 个模拟格输出 (湿格数, 最大水深)。
+ * 统计降采样：每 blockSize × blockSize 个模拟格输出 (湿格数, 最大水深)。
+ *
  * debugStats 只读回这张小纹理，避免 384 分辨率下整张 RGBA32F 读回超过 5ms。
+ * 块边长在编译期展开：GLSL ES 1.00 的循环上界必须是常量，不能改成 uniform 比较；
+ * 写成函数是为了让块边长只有 `STATS_BLOCK` 一处真源。
  */
-export const STATS_FRAGMENT = /* glsl */ `
+export function statsFragment(blockSize: number): string {
+  return /* glsl */ `
 uniform sampler2D uState;
 uniform float uResolution;
 uniform float uOutSize;
@@ -231,8 +237,8 @@ void main() {
   ivec2 base = ivec2(floor(vUv * uOutSize)) * uBlock;
   float wet = 0.0;
   float maxDepth = 0.0;
-  for (int y = 0; y < 4; y++) {
-    for (int x = 0; x < 4; x++) {
+  for (int y = 0; y < ${blockSize}; y++) {
+    for (int x = 0; x < ${blockSize}; x++) {
       ivec2 p = base + ivec2(x, y);
       if (p.x >= res.x || p.y >= res.y) continue;
       float depth = texelFetch(uState, p, 0).r;
@@ -245,3 +251,4 @@ void main() {
   gl_FragColor = vec4(wet, maxDepth, 0.0, 0.0);
 }
 `
+}

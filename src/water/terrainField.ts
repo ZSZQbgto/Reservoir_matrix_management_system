@@ -25,7 +25,10 @@ export function createLocalProjection(origin: LonLat, sizeMeters: number): Local
   const latRad = (origin.latitude * Math.PI) / 180
   // WGS84 子午圈 / 卯酉圈在给定纬度的每度弧长（米）。
   const mPerDegLat =
-    111132.92 - 559.82 * Math.cos(2 * latRad) + 1.175 * Math.cos(4 * latRad) - 0.0023 * Math.cos(6 * latRad)
+    111132.92 -
+    559.82 * Math.cos(2 * latRad) +
+    1.175 * Math.cos(4 * latRad) -
+    0.0023 * Math.cos(6 * latRad)
   const mPerDegLon =
     111412.84 * Math.cos(latRad) - 93.5 * Math.cos(3 * latRad) + 0.118 * Math.cos(5 * latRad)
   const half = sizeMeters / 2
@@ -71,7 +74,9 @@ export interface TerrainSampleOptions {
  * 采样是同步 GPU/CPU 混合操作（viewer.sampleHeight 约 0.2 ms/点），
  * 因此按行分帧执行，避免长时间冻结页面。
  */
-export async function sampleTerrainField(options: TerrainSampleOptions): Promise<TerrainField | null> {
+export async function sampleTerrainField(
+  options: TerrainSampleOptions
+): Promise<TerrainField | null> {
   const { projection, sampleHeight, cancel } = options
   const gridSize = options.gridSize ?? TERRAIN_GRID_SIZE
   const chunkRows = Math.max(1, options.chunkRows ?? 4)
@@ -114,13 +119,14 @@ export async function sampleTerrainField(options: TerrainSampleOptions): Promise
 
   if (cancel?.cancelled) return null
 
-  let baseElevation = typeof centerHeight === 'number' && Number.isFinite(centerHeight) ? centerHeight : Number.NaN
+  let baseElevation =
+    typeof centerHeight === 'number' && Number.isFinite(centerHeight) ? centerHeight : Number.NaN
   if (!Number.isFinite(baseElevation)) {
     let sum = 0
     let count = 0
     for (let i = 0; i < total; i++) {
       if (found[i]) {
-        sum += heights[i]
+        sum += heights[i] ?? 0
         count += 1
       }
     }
@@ -128,7 +134,7 @@ export async function sampleTerrainField(options: TerrainSampleOptions): Promise
   }
 
   fillMissingHeights(heights, found, gridSize)
-  for (let i = 0; i < total; i++) heights[i] -= baseElevation
+  for (let i = 0; i < total; i++) heights[i] = (heights[i] ?? 0) - baseElevation
 
   return {
     origin: projection.origin,
@@ -161,7 +167,7 @@ function fillMissingHeights(heights: Float32Array, found: Uint8Array, gridSize: 
       if (j < gridSize - 1 && found[index + gridSize]) neighbors.push(index + gridSize)
       if (neighbors.length === 0) continue
       let sum = 0
-      for (const n of neighbors) sum += heights[n]
+      for (const n of neighbors) sum += heights[n] ?? 0
       heights[index] = sum / neighbors.length
       found[index] = 2
       missing -= 1
@@ -183,7 +189,7 @@ function fillMissingHeights(heights: Float32Array, found: Uint8Array, gridSize: 
         if (ni < 0 || nj < 0 || ni >= gridSize || nj >= gridSize) continue
         const nIndex = nj * gridSize + ni
         if (found[nIndex]) continue
-        heights[nIndex] = heights[index]
+        heights[nIndex] = heights[index] ?? 0
         found[nIndex] = 2
         missing -= 1
         next.push(nIndex)
@@ -214,11 +220,12 @@ export function resampleTerrain(field: TerrainField, resolution: number): SimTer
         const x0 = Math.min(src - 1, Math.floor(sx))
         const x1 = Math.min(src - 1, x0 + 1)
         const fx = sx - x0
-        const h00 = field.heights[y0 * src + x0]
-        const h10 = field.heights[y0 * src + x1]
-        const h01 = field.heights[y1 * src + x0]
-        const h11 = field.heights[y1 * src + x1]
-        heights[j * dst + i] = (h00 * (1 - fx) + h10 * fx) * (1 - fy) + (h01 * (1 - fx) + h11 * fx) * fy
+        const h00 = field.heights[y0 * src + x0] ?? 0
+        const h10 = field.heights[y0 * src + x1] ?? 0
+        const h01 = field.heights[y1 * src + x0] ?? 0
+        const h11 = field.heights[y1 * src + x1] ?? 0
+        heights[j * dst + i] =
+          (h00 * (1 - fx) + h10 * fx) * (1 - fy) + (h01 * (1 - fx) + h11 * fx) * fy
       }
     }
   }
@@ -243,9 +250,9 @@ export function sampleFieldHeight(field: TerrainField | SimTerrain, x: number, z
   const z1 = Math.min(n - 1, z0 + 1)
   const fx = Math.max(0, Math.min(1, gx - x0))
   const fz = Math.max(0, Math.min(1, gz - z0))
-  const h00 = field.heights[z0 * n + x0]
-  const h10 = field.heights[z0 * n + x1]
-  const h01 = field.heights[z1 * n + x0]
-  const h11 = field.heights[z1 * n + x1]
+  const h00 = field.heights[z0 * n + x0] ?? 0
+  const h10 = field.heights[z0 * n + x1] ?? 0
+  const h01 = field.heights[z1 * n + x0] ?? 0
+  const h11 = field.heights[z1 * n + x1] ?? 0
   return (h00 * (1 - fx) + h10 * fx) * (1 - fz) + (h01 * (1 - fx) + h11 * fx) * fz
 }

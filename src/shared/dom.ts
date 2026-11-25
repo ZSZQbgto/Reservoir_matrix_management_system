@@ -32,3 +32,18 @@ export function syncRangeFill(input: HTMLInputElement): void {
   const percent = Math.min(100, Math.max(0, ((value - min) / (max - min)) * 100))
   input.style.setProperty('--fill', `${percent.toFixed(1)}%`)
 }
+
+/**
+ * 转义 HTML 文本与属性值。
+ *
+ * 只用于 `innerHTML` 模板：所有来自状态 / 导入 JSON 的字符串都必须过一遍，
+ * 否则工程文件就是注入入口。纯文本赋值（`textContent`）不需要转义。
+ */
+export function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}

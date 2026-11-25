@@ -30,7 +30,12 @@ function readEnv(key) {
 
 function parseArgs(argv) {
   const options = {
-    region: { ...DEFAULT_REGION },
+    // 复制成可变对象：DEFAULT_REGION 被 Object.freeze，直接展开会保留只读属性。
+    region: {
+      longitude: DEFAULT_REGION.longitude,
+      latitude: DEFAULT_REGION.latitude,
+      sizeMeters: DEFAULT_REGION.sizeMeters
+    },
     terrainMinLevel: 0,
     terrainMaxLevel: 14,
     imageryMinLevel: 8,
@@ -78,7 +83,7 @@ function parseArgs(argv) {
           '  --terrain-levels <a-b>   地形层级范围（默认 0-14）',
           '  --imagery-levels <a-b>   影像层级范围（默认 8-15）',
           '  --concurrency <n>        并发下载数（默认 8）',
-          '  --cache-dir <dir>        缓存目录（默认 .cache/tiles）'
+          '  --cache-dir <path>       缓存目录（默认 .cache/tiles）'
         ].join('\n')
       )
       process.exit(0)
@@ -90,7 +95,9 @@ function parseArgs(argv) {
 const options = parseArgs(process.argv.slice(2))
 const token = readEnv('CESIUM_ION_TOKEN')
 if (!token) {
-  console.error('[cache] 未找到 CESIUM_ION_TOKEN（.env 或环境变量），无法下载 Cesium World Terrain。')
+  console.error(
+    '[cache] 未找到 CESIUM_ION_TOKEN（.env 或环境变量），无法下载 Cesium World Terrain。'
+  )
   process.exit(1)
 }
 const cacheDir = options.cacheDir ?? defaultCacheRoot(root)

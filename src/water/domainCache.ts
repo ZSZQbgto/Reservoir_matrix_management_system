@@ -1,15 +1,14 @@
 import { TERRAIN_GRID_SIZE, WATER_DOMAIN, type TerrainField } from './types'
-import { STATIC_HOST, assetPath } from '../ui/assets'
+import { STATIC_HOST, assetPath } from '../shared/assets'
 
 /**
  * 固定模拟域地形高度场的本地存储。
  *
- * 模拟域固定为 116.77, 36.02 的 8 km × 8 km，地形高度场（97 × 97，
- * 相对域中心椭球高的 Float32 米数）一经采样就同时写入：
+ * 模拟域地形高度场（97 × 97，相对域中心椭球高的 Float32 米数）一经采样就同时写入：
  * - 浏览器 localStorage（键 `tellux-water-domain-v1`，约 50 KB）；
  * - 服务器本地缓存 `.cache/tiles/domain/domain.json`（跨浏览器/清空浏览器缓存后仍可恢复）。
  *
- * 之后进入水体编辑 / 刷新页面直接恢复，不再飞行相机与重新采样地形。
+ * 再次进入或刷新时直接恢复，跳过相机飞行与地形采样。
  */
 export const WATER_DOMAIN_CACHE_KEY = 'tellux-water-domain-v1'
 export const WATER_DOMAIN_SERVER_URL = assetPath('domain-cache/domain.json')
@@ -38,7 +37,7 @@ export interface CachedDomainInfo {
 function encodeHeights(heights: Float32Array): string {
   const bytes = new Uint8Array(heights.length * 4)
   const view = new DataView(bytes.buffer)
-  for (let i = 0; i < heights.length; i += 1) view.setFloat32(i * 4, heights[i], true)
+  for (let i = 0; i < heights.length; i += 1) view.setFloat32(i * 4, heights[i]!, true)
   let binary = ''
   for (let offset = 0; offset < bytes.length; offset += HEIGHTS_BASE64_CHUNK) {
     const chunk = bytes.subarray(offset, Math.min(bytes.length, offset + HEIGHTS_BASE64_CHUNK))
@@ -168,15 +167,33 @@ export function getCachedDomainInfo(): CachedDomainInfo | null {
   }
 }
 
+/** 服务器缓存请求超时（ms）：本地中间件假死时不能让建域流程永久停在进度条上。 */
+const SERVER_FETCH_TIMEOUT_MS = 4000
+
+/**
+ * 带超时的 fetch。
+ *
+ * `AbortSignal.timeout` 在旧 Safari 上不存在，此时退回无信号请求，
+ * 保持原来的「失败即降级」行为而不是抛错。
+ */
+function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  const signal =
+    typeof AbortSignal.timeout === 'function'
+      ? AbortSignal.timeout(SERVER_FETCH_TIMEOUT_MS)
+      : undefined
+  return fetch(input, { ...init, signal })
+}
+
 /** 从服务器本地缓存（.cache/tiles/domain）读取模拟域地形；不可用时返回 null。 */
 export async function fetchServerDomainField(): Promise<TerrainField | null> {
   // 纯静态托管（GitHub Pages）没有该接口，直接用浏览器缓存 / 现场采样。
   if (STATIC_HOST) return null
   try {
-    const response = await fetch(WATER_DOMAIN_SERVER_URL, { cache: 'no-store' })
+    const response = await fetchWithTimeout(WATER_DOMAIN_SERVER_URL, { cache: 'no-store' })
     if (!response.ok) return null
     return fieldFromPayload(await response.json())
-  } catch {
+  } catch (error) {
+    console.warn('[domainCache] 服务器缓存不可用，改用浏览器缓存或现场采样', error)
     return null
   }
 }
@@ -187,13 +204,14 @@ export async function saveDomainFieldToServer(field: TerrainField): Promise<bool
   const payload = createPayload(field)
   if (!payload) return false
   try {
-    const response = await fetch(WATER_DOMAIN_SERVER_URL, {
+    const response = await fetchWithTimeout(WATER_DOMAIN_SERVER_URL, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(payload)
     })
     return response.ok
-  } catch {
+  } catch (error) {
+    console.warn('[domainCache] 写入服务器缓存失败', error)
     return false
   }
 }
@@ -202,9 +220,10 @@ export async function saveDomainFieldToServer(field: TerrainField): Promise<bool
 export async function clearServerDomainField(): Promise<boolean> {
   if (STATIC_HOST) return false
   try {
-    const response = await fetch(WATER_DOMAIN_SERVER_URL, { method: 'DELETE' })
+    const response = await fetchWithTimeout(WATER_DOMAIN_SERVER_URL, { method: 'DELETE' })
     return response.ok
-  } catch {
+  } catch (error) {
+    console.warn('[domainCache] 清除服务器缓存失败', error)
     return false
   }
 }

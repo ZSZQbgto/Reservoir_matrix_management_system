@@ -66,9 +66,7 @@ function tileableFbm(
   let frequency = baseFrequency
   let octaveSeed = seed
   for (let octave = 0; octave < octaves; octave += 1) {
-    sum +=
-      amplitude *
-      tileableValueNoise(u * frequency, v * frequency, frequency, octaveSeed)
+    sum += amplitude * tileableValueNoise(u * frequency, v * frequency, frequency, octaveSeed)
     normalization += amplitude
     amplitude *= gain
     frequency *= 2
@@ -77,11 +75,7 @@ function tileableFbm(
   return normalization > 0 ? sum / normalization : 0
 }
 
-function createRepeatingTexture(
-  data: Uint8Array,
-  size: number,
-  name: string
-): THREE.DataTexture {
+function createRepeatingTexture(data: Uint8Array, size: number, name: string): THREE.DataTexture {
   const texture = new THREE.DataTexture(data, size, size, THREE.RGBAFormat, THREE.UnsignedByteType)
   texture.name = name
   texture.wrapS = THREE.RepeatWrapping
@@ -137,10 +131,10 @@ function createWaterNormalTexture(options: WaterNormalTextureOptions = {}): THRE
   const wrap = (value: number): number => ((value % size) + size) % size
   for (let y = 0; y < size; y += 1) {
     for (let x = 0; x < size; x += 1) {
-      const left = heights[y * size + wrap(x - 1)]
-      const right = heights[y * size + wrap(x + 1)]
-      const south = heights[wrap(y - 1) * size + x]
-      const north = heights[wrap(y + 1) * size + x]
+      const left = heights[y * size + wrap(x - 1)] ?? 0
+      const right = heights[y * size + wrap(x + 1)] ?? 0
+      const south = heights[wrap(y - 1) * size + x] ?? 0
+      const north = heights[wrap(y + 1) * size + x] ?? 0
       // 法线 = normalize(-dh/du, -dh/dv, 1)；u 沿东、v 沿北。
       let nx = -(right - left) * strength
       let ny = -(north - south) * strength

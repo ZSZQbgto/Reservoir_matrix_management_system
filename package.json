@@ -1,5 +1,5 @@
 {
-  "name": "tellux-tianditu-earth",
+  "name": "tellux-earth",
   "private": true,
   "version": "1.0.0",
   "type": "module",
@@ -11,8 +11,14 @@
     "preview": "vite preview --host 127.0.0.1 --port 4173",
     "start": "node server.mjs",
     "type-check": "tsc --noEmit",
-    "check": "npm run type-check && npm test",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "gen:dom": "node scripts/generate-dom-ids.mjs",
+    "check:conventions": "node scripts/check-conventions.mjs",
+    "check": "npm run type-check && npm run lint && npm run format:check && npm run check:conventions && npm test",
     "verify": "node scripts/verify.mjs",
+    "verify:ui": "node scripts/verify.mjs --ui",
     "test": "node tests/water-state.test.mjs",
     "cache:prefetch": "node scripts/cache-region.mjs",
     "cache:static": "node scripts/cache-static.mjs"
@@ -28,10 +34,16 @@
     "three": "^0.184.0"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
     "@types/node": "^26.6.6",
     "@types/three": "^0.184.1",
+    "eslint": "^9.39.5",
+    "eslint-config-prettier": "^9.1.2",
+    "globals": "^15.15.0",
     "playwright-core": "^1.49.0",
+    "prettier": "^3.10.1",
     "typescript": "~5.2.2",
-    "vite": "^5.4.19"
+    "typescript-eslint": "^8.74.0",
+    "vite": "^8.3.8"
   }
 }

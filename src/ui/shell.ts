@@ -1,15 +1,16 @@
 /**
  * UI 外壳：布局测量、模式滑块、面板折叠、水源抽屉与滑杆填充。
  *
- * 这些行为只服务界面本身，水体逻辑仍由 WaterEditor 负责。
+ * 只操作布局与 DOM，不持有水体状态。
  */
-import { pickElement, syncRangeFill } from './dom'
+import { pickElement, syncRangeFill } from '../shared/dom'
+import { domId } from '../shared/domIds'
 
 interface CollapseOptions {
   panel: HTMLElement
   toggle: HTMLElement
   body: HTMLElement
-  /** 小窗口首次进入时默认收起。 */
+  /** 为 true 时初始折叠。 */
   collapseByDefault?: boolean
 }
 
@@ -45,8 +46,8 @@ export function initUiShell(): void {
 
   /* ------------------------------------------------------------ 模式滑块 */
 
-  const dock = pickElement<HTMLElement>('#mode-dock')
-  const glider = pickElement<HTMLElement>('#mode-glider')
+  const dock = pickElement<HTMLElement>(domId('mode-dock'))
+  const glider = pickElement<HTMLElement>(domId('mode-glider'))
 
   if (dock && glider) {
     const place = (): void => {
@@ -99,10 +100,10 @@ export function initUiShell(): void {
       panel.classList.add('is-animating')
       toggle.setAttribute('aria-expanded', 'false')
 
-      animation = panel.animate(
-        [{ height: `${from}px` }, { height: `${to}px` }],
-        { duration: duration(280), easing: EASE_OUT }
-      )
+      animation = panel.animate([{ height: `${from}px` }, { height: `${to}px` }], {
+        duration: duration(280),
+        easing: EASE_OUT
+      })
       animation.onfinish = () => {
         panel.dataset.collapsed = 'true'
         panel.classList.remove('is-animating')
@@ -129,10 +130,10 @@ export function initUiShell(): void {
       animating = true
       panel.classList.add('is-animating')
 
-      animation = panel.animate(
-        [{ height: `${from}px` }, { height: `${to}px` }],
-        { duration: duration(360), easing: SPRING_IN }
-      )
+      animation = panel.animate([{ height: `${from}px` }, { height: `${to}px` }], {
+        duration: duration(360),
+        easing: SPRING_IN
+      })
       animation.onfinish = () => {
         panel.classList.remove('is-animating')
         panel.style.height = ''
@@ -166,9 +167,9 @@ export function initUiShell(): void {
     return { collapse, expand }
   }
 
-  const consolePanel = pickElement<HTMLElement>('#console')
-  const consoleToggle = pickElement<HTMLElement>('#console-toggle')
-  const consoleBody = pickElement<HTMLElement>('#console-body')
+  const consolePanel = pickElement<HTMLElement>(domId('console'))
+  const consoleToggle = pickElement<HTMLElement>(domId('console-toggle'))
+  const consoleBody = pickElement<HTMLElement>(domId('console-body'))
   const compact = window.matchMedia('(max-width: 720px)')
 
   if (consolePanel && consoleToggle && consoleBody) {
@@ -187,9 +188,9 @@ export function initUiShell(): void {
     })
   }
 
-  const waterRight = pickElement<HTMLElement>('#water-right')
-  const waterRightToggle = pickElement<HTMLElement>('#water-right-toggle')
-  const waterRightBody = pickElement<HTMLElement>('#water-right-body')
+  const waterRight = pickElement<HTMLElement>(domId('water-right'))
+  const waterRightToggle = pickElement<HTMLElement>(domId('water-right-toggle'))
+  const waterRightBody = pickElement<HTMLElement>(domId('water-right-body'))
   let waterRightControl: { collapse: () => void; expand: () => void } | null = null
 
   if (waterRight && waterRightToggle && waterRightBody) {
@@ -203,19 +204,19 @@ export function initUiShell(): void {
   /* ------------------------------------------------------------ 水源抽屉 */
 
   const body = document.body
-  const handle = pickElement<HTMLButtonElement>('#source-drawer-toggle')
-  const drawer = pickElement<HTMLElement>('#water-left')
-  const sourceList = pickElement<HTMLElement>('#water-source-list')
-  const sourceCount = pickElement<HTMLElement>('#source-count')
+  const handle = pickElement<HTMLButtonElement>(domId('source-drawer-toggle'))
+  const drawer = pickElement<HTMLElement>(domId('water-left'))
+  const sourceList = pickElement<HTMLElement>(domId('water-source-list'))
+  const sourceCount = pickElement<HTMLElement>(domId('source-count'))
 
   const setDrawer = (open: boolean, moveFocus = false): void => {
     body.dataset.drawer = open ? 'open' : 'closed'
     handle?.setAttribute('aria-expanded', String(open))
     if (open) {
-      // 小窗口下同一时间只保留一块面板，避免抽屉压在底部参数面板上。
+      // 打开抽屉时收起右侧面板，避免两块面板重叠。
       if (compact.matches) waterRightControl?.collapse()
       if (moveFocus) {
-        const target = pickElement<HTMLElement>('#water-add-source', drawer ?? document)
+        const target = pickElement<HTMLElement>(domId('water-add-source'), drawer ?? document)
         target?.focus({ preventScroll: true })
       }
     }

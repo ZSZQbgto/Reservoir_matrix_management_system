@@ -160,9 +160,7 @@ if (!fs.existsSync(layerFile)) {
   process.exit(1)
 }
 if (!fs.existsSync(imageryDir)) {
-  console.error(
-    `[pages] 缺少 ${imageryDir}。请先运行 \`npm run cache:prefetch\` 生成影像缓存。`
-  )
+  console.error(`[pages] 缺少 ${imageryDir}。请先运行 \`npm run cache:prefetch\` 生成影像缓存。`)
   process.exit(1)
 }
 

@@ -1,12 +1,12 @@
 /**
- * 水体编辑器共享契约：状态模型、常量与网格坐标约定。
+ * 水体编辑器共享类型与常量：状态模型、模拟常量与网格坐标。
  *
  * 本文件是 UI / 模拟 / 渲染三层之间唯一的类型来源：
  * - `src/water/waterEditor.ts` 只读写 `WaterState`；
  * - `src/water/shallowWater.ts` 只消费 `SimTerrain` / `SimSource`；
  * - `src/water/waterSurface.ts` 只消费模拟纹理与 `SurfaceDomain`。
  *
- * 坐标约定（三层必须一致）：
+ * 坐标定义（三层共用）：
  * - 模拟域是以 `origin` 为原点、边长 `sizeMeters` 的切平面正方形；
  * - 网格索引 `i` 沿东（+x）从 0 到 N-1，`j` 沿北（+z）从 0 到 N-1；
  * - 纹理 `uv = ((i + 0.5) / N, (j + 0.5) / N)`，即 v=0 是南边、v=1 是北边；
@@ -17,6 +17,15 @@ export const WATER_STATE_VERSION = 1
 export const WATER_STORAGE_KEY = 'tellux-water-editor-v1'
 export const WATER_MODE_STORAGE_KEY = 'tellux-water-editor-mode-v1'
 export const MAX_WATER_SOURCES = 8
+
+/** 水源半径（米）：数据层允许 20–3000。 */
+export const SOURCE_RADIUS_RANGE = { min: 20, max: 3000 } as const
+
+/** 面板滑杆范围 20–2000（窄于数据层上限）。 */
+export const SOURCE_RADIUS_PANEL_RANGE = { min: 20, max: 2000 } as const
+
+/** 单个水源每次注水深度（米）：数据层与模拟层共用同一范围。 */
+export const SOURCE_AMOUNT_RANGE = { min: 0.5, max: 300 } as const
 
 /** 模拟域固定中心与边长（米）：116.77, 36.02 附近的 8 km × 8 km 区域。 */
 export const WATER_DOMAIN = Object.freeze({
@@ -185,8 +194,13 @@ export interface SurfaceDomain {
   baseElevation: number
 }
 
-export const clamp = (value: number, min: number, max: number): number =>
-  Math.min(max, Math.max(min, value))
+/**
+ * 显式 `.ts` 后缀：`tests/` 用 Node 原生类型剥离直接运行本文件，
+ * Node ESM 不做无后缀解析（应用侧其余模块仍按 Vite 约定省略后缀）。
+ */
+import { clamp } from '../shared/math.ts'
+
+export { clamp }
 
 export function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value)
@@ -197,9 +211,15 @@ export function toFiniteNumber(value: unknown): number | null {
   return isFiniteNumber(value) ? value : null
 }
 
-export function nearestOption<T extends number>(options: readonly T[], value: unknown, fallback: T): T {
+export function nearestOption<T extends number>(
+  options: readonly T[],
+  value: unknown,
+  fallback: T
+): T {
   if (!isFiniteNumber(value)) return fallback
-  let best = options[0]
+  const first = options[0]
+  if (first === undefined) return fallback
+  let best = first
   let bestDistance = Number.POSITIVE_INFINITY
   for (const option of options) {
     const distance = Math.abs(option - value)
@@ -212,6 +232,9 @@ export function nearestOption<T extends number>(options: readonly T[], value: un
 }
 
 let sourceCounter = 0
+
+/** 水源 id 会写进 DOM 属性与调试 API，只接受字母 / 数字 / 下划线 / 连字符。 */
+const SOURCE_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/
 
 export function createSourceId(): string {
   sourceCounter += 1
@@ -252,11 +275,12 @@ export function normalizeWaterState(raw: unknown): WaterState {
   let domain: WaterDomainState | null = null
   const rawDomain = input.domain
   if (rawDomain && typeof rawDomain === 'object') {
-    // 模拟域固定为 116.77, 36.02 的 8 km × 8 km；旧工程/旧尺寸一律迁移到固定区域。
+    // 域中心与尺寸取当前常量；旧工程/旧尺寸统一迁移到该区域。
     domain = { ...WATER_DOMAIN }
   }
 
-  const rawSim = input.sim && typeof input.sim === 'object' ? (input.sim as Record<string, unknown>) : {}
+  const rawSim =
+    input.sim && typeof input.sim === 'object' ? (input.sim as Record<string, unknown>) : {}
   const sim: WaterSimSettings = {
     speed: isFiniteNumber(rawSim.speed) ? clamp(rawSim.speed, 0.1, 64) : defaults.sim.speed,
     waterAmount: isFiniteNumber(rawSim.waterAmount)
@@ -267,15 +291,16 @@ export function normalizeWaterState(raw: unknown): WaterState {
     maxFlowSpeed: isFiniteNumber(rawSim.maxFlowSpeed)
       ? clamp(rawSim.maxFlowSpeed, 5, 60)
       : defaults.sim.maxFlowSpeed,
-    damping: isFiniteNumber(rawSim.damping)
-      ? clamp(rawSim.damping, 0.9, 1)
-      : defaults.sim.damping,
+    damping: isFiniteNumber(rawSim.damping) ? clamp(rawSim.damping, 0.9, 1) : defaults.sim.damping,
     injectInterval: isFiniteNumber(rawSim.injectInterval)
       ? Math.round(clamp(rawSim.injectInterval, 1, 8))
       : defaults.sim.injectInterval
   }
 
-  const rawVisual = input.visual && typeof input.visual === 'object' ? (input.visual as Record<string, unknown>) : {}
+  const rawVisual =
+    input.visual && typeof input.visual === 'object'
+      ? (input.visual as Record<string, unknown>)
+      : {}
   // 兼容短暂的布尔版本工程（opaque: true/false）。
   const opacity = isFiniteNumber(rawVisual.opacity)
     ? clamp(rawVisual.opacity, 0, 1)
@@ -283,12 +308,18 @@ export function normalizeWaterState(raw: unknown): WaterState {
       ? 1
       : defaults.visual.opacity
   const visual: WaterVisualSettings = {
-    shimmer: isFiniteNumber(rawVisual.shimmer) ? clamp(rawVisual.shimmer, 0, 3) : defaults.visual.shimmer,
-    glint: isFiniteNumber(rawVisual.glint) ? clamp(rawVisual.glint, 0.3, 2.5) : defaults.visual.glint,
+    shimmer: isFiniteNumber(rawVisual.shimmer)
+      ? clamp(rawVisual.shimmer, 0, 3)
+      : defaults.visual.shimmer,
+    glint: isFiniteNumber(rawVisual.glint)
+      ? clamp(rawVisual.glint, 0.3, 2.5)
+      : defaults.visual.glint,
     reflection: isFiniteNumber(rawVisual.reflection)
       ? clamp(rawVisual.reflection, 0, 1.5)
       : defaults.visual.reflection,
-    ripple: isFiniteNumber(rawVisual.ripple) ? clamp(rawVisual.ripple, 0, 2) : defaults.visual.ripple,
+    ripple: isFiniteNumber(rawVisual.ripple)
+      ? clamp(rawVisual.ripple, 0, 2)
+      : defaults.visual.ripple,
     rippleScale: isFiniteNumber(rawVisual.rippleScale)
       ? clamp(rawVisual.rippleScale, 0.4, 2.5)
       : defaults.visual.rippleScale,
@@ -314,14 +345,24 @@ export function normalizeWaterState(raw: unknown): WaterState {
         isFiniteNumber(s.targetLevel) && s.targetLevel > -1000 && s.targetLevel < 20000
           ? s.targetLevel
           : null
-      const amount = isFiniteNumber(s.amount) && s.amount >= 0.5 && s.amount <= 300 ? s.amount : null
+      const amount =
+        isFiniteNumber(s.amount) &&
+        s.amount >= SOURCE_AMOUNT_RANGE.min &&
+        s.amount <= SOURCE_AMOUNT_RANGE.max
+          ? s.amount
+          : null
       const groundLevel = isFiniteNumber(s.groundLevel) ? s.groundLevel : null
       sources.push({
-        id: typeof s.id === 'string' && s.id ? s.id : createSourceId(),
-        name: typeof s.name === 'string' && s.name.trim() ? s.name.trim().slice(0, 40) : `水源 ${sources.length + 1}`,
+        id: typeof s.id === 'string' && SOURCE_ID_PATTERN.test(s.id) ? s.id : createSourceId(),
+        name:
+          typeof s.name === 'string' && s.name.trim()
+            ? s.name.trim().slice(0, 40)
+            : `水源 ${sources.length + 1}`,
         longitude: clamp(s.longitude, -180, 180),
         latitude: clamp(s.latitude, -85, 85),
-        radius: isFiniteNumber(s.radius) ? clamp(s.radius, 20, 3000) : 150,
+        radius: isFiniteNumber(s.radius)
+          ? clamp(s.radius, SOURCE_RADIUS_RANGE.min, SOURCE_RADIUS_RANGE.max)
+          : 150,
         targetLevel,
         amount,
         enabled: s.enabled !== false,

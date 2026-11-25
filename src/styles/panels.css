@@ -1,0 +1,962 @@
+/* ==========================================================================
+   面板与控件：玻璃容器、设置行、按钮、水体面板、输入与覆盖层
+   ========================================================================== */
+
+/* ==========================================================================
+   面板：统一的玻璃容器
+   ========================================================================== */
+
+.console,
+.water-panel {
+  position: relative;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  width: var(--panel-w);
+  max-height: 100%;
+  min-height: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background:
+    linear-gradient(158deg, var(--panel-top), var(--panel-mid) 42%, var(--panel-bottom)),
+    var(--glass);
+  -webkit-backdrop-filter: blur(26px) saturate(122%);
+  backdrop-filter: blur(26px) saturate(122%);
+  box-shadow: var(--shadow-panel);
+  overflow: hidden;
+  pointer-events: auto;
+}
+
+.console {
+  animation: panel-in var(--dur-4) var(--spring-soft) backwards;
+}
+
+.water-panel-right {
+  animation: panel-in var(--dur-4) var(--spring-soft) backwards;
+}
+
+.is-animating .console-body,
+.is-animating .panel-body {
+  overflow: hidden !important;
+}
+
+.console[data-collapsed='true'] .console-body,
+.water-panel[data-collapsed='true'] .panel-body {
+  display: none;
+}
+
+.console-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex: 0 0 auto;
+  width: 100%;
+  height: var(--panel-head-h);
+  padding: 0 var(--panel-pad);
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  transition:
+    background var(--dur-2) ease,
+    transform var(--dur-1) var(--spring);
+}
+
+.console-toggle-side {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.chevron {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-right: 1px solid currentColor;
+  border-bottom: 1px solid currentColor;
+  transform: rotate(-135deg) translate(-1px, -1px);
+  transition: transform var(--dur-3) var(--spring);
+  opacity: 0.68;
+}
+
+.console[data-collapsed='true'] .chevron,
+.panel-collapse[aria-expanded='false'] .chevron {
+  transform: rotate(45deg) translate(-1px, -1px);
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex: 0 0 auto;
+  height: var(--panel-head-h);
+  padding: 0 var(--panel-pad);
+  border-bottom: 1px solid var(--line);
+}
+
+.panel-head > span:first-child {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+}
+
+.panel-head-side {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.panel-collapse {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin-right: -6px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition:
+    border-color var(--dur-2) ease,
+    background var(--dur-2) ease,
+    transform var(--dur-1) var(--spring);
+}
+
+.panel-collapse:active {
+  transform: scale(0.9);
+}
+
+.console-body,
+.panel-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 2px 0 12px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(150, 190, 230, 0.34) transparent;
+  scrollbar-gutter: stable;
+}
+
+.console-body::-webkit-scrollbar,
+.panel-body::-webkit-scrollbar {
+  width: 9px;
+}
+
+.console-body::-webkit-scrollbar-track,
+.panel-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.console-body::-webkit-scrollbar-thumb,
+.panel-body::-webkit-scrollbar-thumb {
+  background: rgba(150, 190, 230, 0.28);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  border-radius: 99px;
+}
+
+.console-body::-webkit-scrollbar-thumb:hover,
+.panel-body::-webkit-scrollbar-thumb:hover {
+  background: rgba(170, 215, 250, 0.46);
+  background-clip: padding-box;
+}
+
+/* ==========================================================================
+   设置分组与行
+   ========================================================================== */
+
+.control-section {
+  padding: 14px var(--panel-pad) 12px;
+  border-bottom: 1px solid rgba(180, 208, 242, 0.09);
+  scroll-margin-top: 44px;
+}
+
+.control-section:last-of-type {
+  border-bottom: 0;
+}
+
+.section-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin: -14px calc(var(--panel-pad) * -1) 10px;
+  padding: 13px var(--panel-pad) 8px;
+  background: linear-gradient(180deg, rgba(9, 17, 28, 0.97) 72%, rgba(9, 17, 28, 0.86));
+  -webkit-backdrop-filter: blur(7px);
+  backdrop-filter: blur(7px);
+}
+
+.section-head span {
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+}
+
+.switch-row,
+.range-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 9px 0 0;
+  color: rgba(221, 235, 252, 0.8);
+  font-size: 12px;
+}
+
+.range-row {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 5px;
+}
+
+.range-row > span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+output {
+  font-family: var(--mono), monospace;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  letter-spacing: 0.03em;
+}
+
+.switch-row {
+  position: relative;
+  min-height: 28px;
+  cursor: pointer;
+}
+
+.switch {
+  width: 38px;
+  height: 22px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  border: 1px solid rgba(170, 202, 232, 0.3);
+  background: rgba(8, 18, 30, 0.78);
+  position: relative;
+  transition:
+    background var(--dur-3) ease,
+    border-color var(--dur-3) ease;
+}
+
+.switch::after {
+  content: '';
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  top: 3px;
+  left: 3px;
+  border-radius: 50%;
+  background: rgba(180, 204, 230, 0.66);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+  transition:
+    transform var(--dur-3) var(--spring),
+    background var(--dur-2) ease,
+    box-shadow var(--dur-2) ease;
+}
+
+input[type='checkbox'] {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+input[type='checkbox']:checked + .switch {
+  border-color: rgb(var(--accent-rgb) / 0.5);
+  background: rgba(31, 106, 138, 0.62);
+}
+
+input[type='checkbox']:checked + .switch::after {
+  transform: translateX(16px);
+  background: #b8f2ff;
+  box-shadow: 0 2px 10px rgb(var(--accent-rgb) / 0.85);
+}
+
+input[type='checkbox']:focus-visible + .switch {
+  outline: 2px solid rgb(var(--accent-rgb) / 0.78);
+  outline-offset: 2px;
+}
+
+/* 滑杆：整块 22px 的点击区域，视觉轨道 3px，值填充 */
+input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 22px;
+  margin: 0;
+  padding: 0;
+  /* 由 syncRangeFill（src/shared/dom.ts）写入百分比；此处给非 JS 场景兜底。 */
+  --fill: 0%;
+  background: linear-gradient(
+      90deg,
+      var(--accent-strong) 0 var(--fill, 0%),
+      rgba(151, 185, 220, 0.2) var(--fill, 0%) 100%
+    )
+    center / 100% 3px no-repeat;
+  outline: none;
+  cursor: pointer;
+}
+
+input[type='range']::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 99px;
+  background: transparent;
+}
+
+input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -5.5px;
+  border-radius: 50%;
+  border: 1px solid rgba(218, 247, 255, 0.92);
+  background: radial-gradient(circle at 36% 34%, #d8f8ff, #4cb9ef 62%, #2b86c7);
+  box-shadow:
+    0 2px 8px rgba(0, 0, 0, 0.5),
+    0 0 0 3px rgb(var(--accent-rgb) / 0.1);
+  transition:
+    transform var(--dur-1) var(--spring),
+    box-shadow var(--dur-2) ease;
+}
+
+input[type='range']::-moz-range-track {
+  height: 3px;
+  border-radius: 99px;
+  background: transparent;
+}
+
+input[type='range']::-moz-range-thumb {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 1px solid rgba(218, 247, 255, 0.92);
+  background: radial-gradient(circle at 36% 34%, #d8f8ff, #4cb9ef 62%, #2b86c7);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+}
+
+input[type='range']:focus-visible {
+  outline: none;
+}
+
+input[type='range']:focus-visible::-webkit-slider-thumb {
+  box-shadow:
+    0 2px 8px rgba(0, 0, 0, 0.5),
+    0 0 0 4px rgb(var(--accent-rgb) / 0.3);
+}
+
+/* Firefox 没有 ::-webkit-slider-thumb，缺这条时键盘焦点完全不可见（WCAG 2.4.7）。 */
+input[type='range']:focus-visible::-moz-range-thumb {
+  box-shadow:
+    0 2px 8px rgba(0, 0, 0, 0.5),
+    0 0 0 4px rgb(var(--accent-rgb) / 0.3);
+}
+
+/* ==========================================================================
+   按钮
+   ========================================================================== */
+
+.primary-button,
+.ghost-button,
+.danger-button {
+  flex: 1;
+  min-height: 36px;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(18, 32, 48, 0.9), rgba(8, 16, 27, 0.9));
+  color: rgba(232, 244, 255, 0.9);
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    border-color var(--dur-2) ease,
+    background var(--dur-2) ease,
+    color var(--dur-2) ease,
+    transform var(--dur-1) var(--spring),
+    box-shadow var(--dur-2) ease;
+}
+
+.primary-button {
+  border-color: rgb(var(--accent-rgb) / 0.4);
+  background: linear-gradient(180deg, rgba(78, 172, 218, 0.38), rgba(24, 88, 124, 0.28));
+  color: #eaf8ff;
+}
+
+.primary-button.is-active {
+  border-color: rgb(var(--accent-warm-rgb) / 0.6);
+  background: linear-gradient(180deg, rgba(214, 156, 88, 0.34), rgba(96, 60, 22, 0.3));
+  color: #ffeeda;
+}
+
+.danger-button {
+  border-color: rgba(255, 128, 112, 0.34);
+  color: rgba(255, 202, 192, 0.92);
+}
+
+.ghost-button.wide,
+.danger-button.wide {
+  display: block;
+  width: calc(100% - var(--panel-pad) * 2);
+  margin: 10px var(--panel-pad) 2px;
+  flex: 0 0 auto;
+}
+
+.water-actions .wide {
+  width: auto;
+  margin: 0;
+}
+
+.water-actions,
+.water-button-row {
+  display: flex;
+  gap: 8px;
+  padding: 12px var(--panel-pad) 4px;
+}
+
+.water-button-row.is-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.water-button-row .ghost-button {
+  min-width: 0;
+  padding-inline: 6px;
+}
+
+/* ==========================================================================
+   水体：左栏
+   ========================================================================== */
+
+.water-progress {
+  margin: 10px var(--panel-pad) 0;
+  padding: 9px 11px;
+  border: 1px solid rgb(var(--accent-rgb) / 0.22);
+  border-radius: var(--radius-sm);
+  background: rgba(8, 26, 40, 0.5);
+}
+
+.water-progress-track {
+  height: 2px;
+  border-radius: 4px;
+  background: rgba(130, 190, 230, 0.16);
+  overflow: hidden;
+}
+
+.water-progress-track > span {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: 4px;
+  background: linear-gradient(
+    90deg,
+    rgb(var(--accent-rgb) / 0.2),
+    #7fe3ff,
+    rgb(var(--accent-rgb) / 0.2)
+  );
+  transition: width 160ms linear;
+}
+
+.water-progress small {
+  display: block;
+  margin-top: 7px;
+  font-family: var(--mono), monospace;
+  font-size: 9px;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.water-source-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px var(--panel-pad) 4px;
+}
+
+.empty-hint {
+  margin: 0;
+  padding: 16px 0 20px;
+  color: var(--faint);
+  font-size: 11.5px;
+  letter-spacing: 0.04em;
+  text-align: center;
+}
+
+.water-source-item {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  min-height: 44px;
+  padding: 8px 9px;
+  border: 1px solid rgba(180, 208, 242, 0.14);
+  border-radius: 10px;
+  background: rgba(8, 16, 27, 0.55);
+  cursor: pointer;
+  transition:
+    border-color var(--dur-2) ease,
+    background var(--dur-2) ease,
+    transform var(--dur-1) var(--spring);
+}
+
+.water-source-item:active {
+  transform: scale(0.985);
+}
+
+.water-source-item[data-selected='true'] {
+  border-color: rgb(var(--accent-warm-rgb) / 0.5);
+  background: rgba(38, 27, 18, 0.34);
+  animation: select-pop 260ms var(--spring);
+}
+
+.water-source-index {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 1px solid rgb(var(--accent-rgb) / 0.35);
+  background: rgba(12, 40, 56, 0.66);
+  font-family: var(--mono), monospace;
+  font-size: 9px;
+  color: #b9f1ff;
+}
+
+.water-source-item[data-selected='true'] .water-source-index {
+  border-color: rgb(var(--accent-warm-rgb) / 0.6);
+  color: var(--accent-warm);
+}
+
+.water-source-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.water-source-copy b {
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(236, 246, 255, 0.92);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.water-source-copy small {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 7px;
+  font-family: var(--mono), monospace;
+  font-size: 9px;
+  line-height: 1.45;
+  letter-spacing: 0.02em;
+  color: var(--faint);
+  overflow: hidden;
+}
+
+.water-source-copy small > span {
+  white-space: nowrap;
+}
+
+.water-source-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.icon-button {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+  transition:
+    color var(--dur-2) ease,
+    border-color var(--dur-2) ease,
+    transform var(--dur-1) var(--spring);
+}
+
+.icon-button:active {
+  transform: scale(0.88);
+}
+
+.mini-switch {
+  position: relative;
+  width: 30px;
+  height: 17px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  border: 1px solid rgba(170, 202, 232, 0.3);
+  background: rgba(9, 19, 31, 0.7);
+  cursor: pointer;
+  transition:
+    background var(--dur-2) ease,
+    border-color var(--dur-2) ease;
+}
+
+.mini-switch > span {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  top: 2.5px;
+  left: 3px;
+  border-radius: 50%;
+  background: rgba(180, 204, 230, 0.62);
+  transition:
+    transform var(--dur-3) var(--spring),
+    background var(--dur-2) ease;
+}
+
+.mini-switch input:checked + span {
+  transform: translateX(13px);
+  background: #b8f2ff;
+}
+
+.mini-switch input:focus-visible + span {
+  outline: 2px solid rgb(var(--accent-rgb) / 0.78);
+  outline-offset: 2px;
+}
+
+.water-domain-card {
+  margin: 12px var(--panel-pad) 0;
+  padding: 11px 12px;
+  border: 1px solid rgba(180, 208, 242, 0.14);
+  border-radius: 10px;
+  background: rgba(6, 14, 24, 0.5);
+}
+
+.water-domain-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 11px;
+  color: rgba(221, 235, 252, 0.8);
+}
+
+.water-domain-row b {
+  font-family: var(--mono), monospace;
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+}
+
+.water-domain-meta {
+  margin: 8px 0 0;
+  font-family: var(--mono), monospace;
+  font-size: 9px;
+  line-height: 1.7;
+  white-space: pre-line;
+  color: var(--faint);
+}
+
+.water-status-line {
+  margin: 12px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid rgba(180, 208, 242, 0.1);
+  font-family: var(--mono), monospace;
+  font-size: 9px;
+  letter-spacing: 0.02em;
+  line-height: 1.7;
+  color: rgba(190, 220, 245, 0.72);
+}
+
+/* ==========================================================================
+   文本输入与说明
+   ========================================================================== */
+
+.text-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 10px 0 0;
+  color: rgba(221, 235, 252, 0.8);
+  font-size: 12px;
+}
+
+.text-row > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.text-row > span small {
+  font-family: var(--mono), monospace;
+  font-size: 9px;
+  color: var(--faint);
+}
+
+.text-row input {
+  width: 132px;
+  min-height: 32px;
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(6, 14, 24, 0.86);
+  color: var(--ink);
+  font-family: var(--mono), monospace;
+  font-size: 11px;
+  outline: none;
+  text-align: right;
+  transition:
+    border-color var(--dur-2) ease,
+    background var(--dur-2) ease;
+}
+
+.text-row input::placeholder {
+  color: rgba(214, 228, 248, 0.55);
+}
+
+.text-row input:focus {
+  border-color: rgb(var(--accent-rgb) / 0.55);
+  background: rgba(8, 20, 33, 0.94);
+}
+
+.text-row.is-readonly output {
+  font-family: var(--mono), monospace;
+  font-size: 11px;
+  color: rgba(228, 244, 255, 0.9);
+}
+
+.water-project-status {
+  margin: 8px var(--panel-pad) 0;
+  font-family: var(--mono), monospace;
+  font-size: 9px;
+  letter-spacing: 0.03em;
+  color: var(--faint);
+}
+
+.water-project-status:empty {
+  display: none;
+}
+
+/* ==========================================================================
+   覆盖层：水源标签、放置提示、加载、Toast
+   ========================================================================== */
+
+.water-labels {
+  position: fixed;
+  inset: 0;
+  z-index: 8;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.water-source-label {
+  position: absolute;
+  transform: translate(-50%, -160%);
+  padding: 4px 8px;
+  border: 1px solid rgb(var(--accent-rgb) / 0.34);
+  border-radius: 999px;
+  background: rgba(5, 16, 26, 0.84);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  color: #cdf3ff;
+  font-family: var(--mono), monospace;
+  font-size: 9px;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  transition:
+    border-color 160ms ease,
+    color 160ms ease;
+}
+
+.water-source-label[data-selected='true'] {
+  border-color: rgb(var(--accent-warm-rgb) / 0.7);
+  color: var(--accent-warm);
+}
+
+body[data-mode='water'] .hud-bottom {
+  opacity: 0.84;
+}
+
+body[data-mode='water'] .console {
+  display: none;
+}
+
+.loader {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  background:
+    radial-gradient(circle at 50% 50%, rgba(11, 25, 41, 0.94), rgba(2, 5, 10, 0.985) 62%), var(--bg);
+  transition:
+    opacity 700ms var(--ease-out),
+    visibility 700ms;
+}
+
+.loader.is-hidden {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* 启动失败：main.ts 只切 class，颜色由这里定义，避免脚本里写死色值。 */
+.loader.is-error .loader-copy strong {
+  color: var(--accent-danger);
+}
+
+.loader.is-error .loader-track span {
+  background: linear-gradient(90deg, #ff9d7a, #ff6c5c);
+}
+
+/* 加载层消失后移除循环动画，避免后台持续绘制。 */
+.loader.is-hidden *,
+.loader.is-hidden *::before,
+.loader.is-hidden *::after {
+  animation: none !important;
+}
+
+.loader-orbit {
+  width: 76px;
+  height: 76px;
+  position: relative;
+  border-radius: 50%;
+}
+
+.loader-orbit::before,
+.loader-orbit::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(130, 214, 255, 0.45);
+  transform: rotate(-24deg) scaleX(1.6);
+  animation: orbit-pulse 3.2s ease-in-out infinite;
+}
+
+.loader-orbit::after {
+  transform: rotate(24deg) scaleX(1.6);
+  border-color: rgba(255, 212, 168, 0.25);
+  animation-delay: -1.6s;
+}
+
+.loader-orbit span {
+  position: absolute;
+  border-radius: 50%;
+}
+
+.loader-orbit span:nth-child(1) {
+  inset: 24px;
+  background: radial-gradient(circle at 35% 32%, #e7fbff, #61c8ff 46%, #1c6bbf 78%);
+  box-shadow: 0 0 34px rgba(73, 180, 255, 0.55);
+}
+
+.loader-orbit span:nth-child(2) {
+  inset: 13px;
+  border: 1px dashed rgba(160, 215, 248, 0.22);
+  animation: spin 12s linear infinite;
+}
+
+.loader-orbit span:nth-child(3) {
+  width: 5px;
+  height: 5px;
+  top: 18px;
+  left: 52px;
+  background: #fff;
+  box-shadow: 0 0 10px #b7ebff;
+}
+
+.loader-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+  text-align: center;
+}
+
+.loader-copy strong {
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.26em;
+  color: rgba(238, 248, 255, 0.9);
+}
+
+.loader-copy small {
+  font-family: var(--mono), monospace;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+}
+
+.loader-track {
+  width: 196px;
+  height: 2px;
+  border-radius: 99px;
+  background: rgba(132, 174, 211, 0.16);
+  position: relative;
+  overflow: hidden;
+}
+
+.loader-track span {
+  position: absolute;
+  inset: 0;
+  width: 34%;
+  border-radius: 99px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  animation: loader-slide 1.8s ease-in-out infinite;
+}
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(var(--footer-h) + 16px);
+  z-index: 60;
+  transform: translate(-50%, 10px);
+  padding: 9px 15px;
+  border: 1px solid var(--line-bright);
+  border-radius: 999px;
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(18px);
+  box-shadow: var(--shadow-pop);
+  font-family: var(--mono), monospace;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  color: rgba(228, 242, 255, 0.88);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity var(--dur-2) ease,
+    transform var(--dur-2) var(--ease-out);
+}
+
+.toast.is-visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
+  animation: toast-pop 300ms var(--spring);
+}

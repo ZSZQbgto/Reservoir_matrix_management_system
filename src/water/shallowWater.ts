@@ -1,13 +1,19 @@
 import * as THREE from 'three'
 import type { SimSettings, SimSource, SimStats, SimTerrain } from './types'
-import { clamp, toFiniteNumber } from './types'
+import {
+  MAX_WATER_SOURCES,
+  SOURCE_AMOUNT_RANGE,
+  SOURCE_RADIUS_RANGE,
+  clamp,
+  toFiniteNumber
+} from './types'
 import { sampleFieldHeight } from './terrainField'
 import {
   DEPTH_FRAGMENT,
   FLUX_FRAGMENT,
   FULLSCREEN_VERTEX,
   INIT_FRAGMENT,
-  STATS_FRAGMENT
+  statsFragment
 } from './simShaders'
 
 /**
@@ -40,7 +46,7 @@ const REFERENCE_SUBSTEP_SECONDS = 1 / 60
 const MAX_SUBSTEPS_PER_UPDATE = 64
 /** 单帧传入 dt 的上限（秒）。 */
 const MAX_FRAME_DT = 0.1
-const MAX_SOURCE_COUNT = 8
+const MAX_SOURCE_COUNT = MAX_WATER_SOURCES
 const GRAVITY = 9.81
 /** 默认通量方向最大虚拟流速（m/s），可由 SimSettings.maxFlowSpeed 覆盖。 */
 const DEFAULT_MAX_FLOW_SPEED = 30
@@ -53,9 +59,23 @@ const MAX_DEPTH = 20_000
 /** 统计降采样的块边长（每块 4x4 模拟格）。 */
 const STATS_BLOCK = 4
 /** 统计读回的最小间隔（ms），与面板 700 ms 的刷新节奏对齐，减少 GPU 同步等待。 */
-const STATS_MIN_INTERVAL_MS = 700
+export const STATS_MIN_INTERVAL_MS = 700
 
 type StatsArray = Float32Array | Uint16Array
+
+/**
+ * 注入水源上限后的水深着色器源码。
+ *
+ * GLSL 数组长度必须是编译期常量，因此不能用 uniform 传 `MAX_SOURCES`；
+ * 这里把 TS 常量写进 `#define`，避免两处各写一个 `8`。
+ */
+function depthShaderSource(): string {
+  const source = DEPTH_FRAGMENT.replace('__MAX_SOURCES__', String(MAX_SOURCE_COUNT))
+  if (source.includes('__MAX_SOURCES__')) {
+    throw new Error('ShallowWaterSim: DEPTH_FRAGMENT 缺少 MAX_SOURCES 占位符')
+  }
+  return source
+}
 
 export class ShallowWaterSim {
   /** 模拟网格边长（= terrain.resolution）。 */
@@ -108,9 +128,12 @@ export class ShallowWaterSim {
     if (!renderer || typeof renderer.render !== 'function') {
       throw new Error('ShallowWaterSim: 需要有效的 THREE.WebGLRenderer')
     }
-    const resolution = Math.round(terrain?.resolution ?? 0)
+    if (!terrain) {
+      throw new Error('ShallowWaterSim: 需要有效的 SimTerrain')
+    }
+    const resolution = Math.round(terrain.resolution)
     if (!Number.isFinite(resolution) || resolution < 2 || resolution > 2048) {
-      throw new Error(`ShallowWaterSim: 非法模拟分辨率 ${String(terrain?.resolution)}`)
+      throw new Error(`ShallowWaterSim: 非法模拟分辨率 ${String(terrain.resolution)}`)
     }
     if (terrain.heights.length !== resolution * resolution) {
       throw new Error('ShallowWaterSim: terrain.heights 长度与 resolution 不一致')
@@ -200,7 +223,7 @@ export class ShallowWaterSim {
         value: Math.pow(this.settings.damping, SUBSTEP_SECONDS / REFERENCE_SUBSTEP_SECONDS)
       }
     })
-    this.depthMaterial = this.createMaterial(DEPTH_FRAGMENT, {
+    this.depthMaterial = this.createMaterial(depthShaderSource(), {
       uState: { value: null },
       uFlux: { value: null },
       uResolution: { value: resolution },
@@ -214,9 +237,10 @@ export class ShallowWaterSim {
       uFallbackAmount: { value: this.settings.waterAmount },
       uHasCap: { value: 0 },
       uCapRel: { value: 0 },
-      uMaxDepth: { value: MAX_DEPTH }
+      uMaxDepth: { value: MAX_DEPTH },
+      uMaxFlowSpeed: { value: this.settings.maxFlowSpeed }
     })
-    this.statsMaterial = this.createMaterial(STATS_FRAGMENT, {
+    this.statsMaterial = this.createMaterial(statsFragment(STATS_BLOCK), {
       // 每次读回统计前绑定当前 ping-pong 状态纹理。
       uState: { value: null },
       uResolution: { value: resolution },
@@ -238,7 +262,7 @@ export class ShallowWaterSim {
    * 每个子步会在两张纹理之间交换，水面层每帧通过 `setStateTexture` 跟随。
    */
   get stateTexture(): THREE.Texture {
-    return this.stateTargets[this.stateIndex].texture
+    return this.stateTargets[this.stateIndex]!.texture
   }
 
   setSources(sources: SimSource[]): void {
@@ -258,8 +282,8 @@ export class ShallowWaterSim {
         next.push({
           x,
           z,
-          radius: radius === null ? 0 : clamp(radius, 0, 6000),
-          amount: amount === null ? 0 : clamp(amount, 0, 6000),
+          radius: radius === null ? 0 : clamp(radius, 0, SOURCE_RADIUS_RANGE.max),
+          amount: amount === null ? 0 : clamp(amount, 0, SOURCE_AMOUNT_RANGE.max),
           targetLevel,
           enabled: raw.enabled !== false
         })
@@ -273,23 +297,23 @@ export class ShallowWaterSim {
     if (this.disposed || !settings) return
     this.settings = {
       speed: clamp(toFiniteNumber(settings.speed) ?? 1, 0.1, 64),
-      paused: settings.paused === true,
+      paused: settings.paused,
       waterAmount: clamp(toFiniteNumber(settings.waterAmount) ?? 15, 1, 300),
-      maxFlowSpeed: clamp(
-        toFiniteNumber(settings.maxFlowSpeed) ?? DEFAULT_MAX_FLOW_SPEED,
-        5,
-        60
-      ),
+      maxFlowSpeed: clamp(toFiniteNumber(settings.maxFlowSpeed) ?? DEFAULT_MAX_FLOW_SPEED, 5, 60),
       damping: clamp(toFiniteNumber(settings.damping) ?? DEFAULT_FLOW_DAMPING, 0.9, 1),
       injectInterval: Math.round(
         clamp(toFiniteNumber(settings.injectInterval) ?? DEFAULT_INJECT_INTERVAL, 1, 8)
       )
     }
-    this.depthMaterial.uniforms.uFallbackAmount.value = this.settings.waterAmount
-    this.fluxMaterial.uniforms.uMaxFlowSpeed.value = this.settings.maxFlowSpeed
+    this.uniform(this.depthMaterial, 'uFallbackAmount').value = this.settings.waterAmount
+    this.uniform(this.fluxMaterial, 'uMaxFlowSpeed').value = this.settings.maxFlowSpeed
+    this.uniform(this.depthMaterial, 'uMaxFlowSpeed').value = this.settings.maxFlowSpeed
     // 面板阻尼以 1/60 s 为参考；当前子步更长，按幂次换算保持每秒衰减不变。
     const dampingRatio = SUBSTEP_SECONDS / REFERENCE_SUBSTEP_SECONDS
-    this.fluxMaterial.uniforms.uDamping.value = Math.pow(this.settings.damping, dampingRatio)
+    this.uniform(this.fluxMaterial, 'uDamping').value = Math.pow(
+      this.settings.damping,
+      dampingRatio
+    )
     if (this.settings.paused) this.accumulator = 0
   }
 
@@ -424,17 +448,15 @@ export class ShallowWaterSim {
   private step(): void {
     this.steps += 1
     const inject = this.tickInjection()
-    const readTarget = this.stateTargets[this.stateIndex]
-    const writeTarget = this.stateTargets[1 - this.stateIndex]
+    const readTarget = this.stateTargets[this.stateIndex]!
+    const writeTarget = this.stateTargets[1 - this.stateIndex]!
 
-    const flux = this.fluxMaterial.uniforms
-    flux.uState.value = readTarget.texture
+    this.uniform(this.fluxMaterial, 'uState').value = readTarget.texture
     this.renderPass(this.fluxMaterial, this.fluxTarget)
 
-    const depth = this.depthMaterial.uniforms
-    depth.uState.value = readTarget.texture
-    depth.uFlux.value = this.fluxTarget.texture
-    depth.uInject.value = inject ? 1 : 0
+    this.uniform(this.depthMaterial, 'uState').value = readTarget.texture
+    this.uniform(this.depthMaterial, 'uFlux').value = this.fluxTarget.texture
+    this.uniform(this.depthMaterial, 'uInject').value = inject ? 1 : 0
     this.renderPass(this.depthMaterial, writeTarget)
 
     this.stateIndex = 1 - this.stateIndex
@@ -456,8 +478,8 @@ export class ShallowWaterSim {
 
   /** 把水源参数写成 uniform；同时推导全局水位上限。 */
   private applySourceUniforms(): void {
-    const uniformSources = this.depthMaterial.uniforms.uSources.value as THREE.Vector4[]
-    const uniformTargets = this.depthMaterial.uniforms.uTargets.value as THREE.Vector4[]
+    const uniformSources = this.uniform(this.depthMaterial, 'uSources').value as THREE.Vector4[]
+    const uniformTargets = this.uniform(this.depthMaterial, 'uTargets').value as THREE.Vector4[]
     let hasTargetCap = false
     let hasUnbounded = false
     let capRel = 0
@@ -466,12 +488,13 @@ export class ShallowWaterSim {
       const source = this.sources[i]
       const uniformSource = uniformSources[i]
       const uniformTarget = uniformTargets[i]
+      if (!uniformSource || !uniformTarget) continue
       if (!source) {
         uniformSource.set(0, 0, 0, 0)
         uniformTarget.set(0, 0, 0, 0)
         continue
       }
-      const enabled = source.enabled !== false
+      const enabled = source.enabled
       uniformSource.set(source.x, source.z, enabled ? source.radius : 0, source.amount)
       if (!enabled) {
         uniformTarget.set(0, 0, 0, 0)
@@ -479,8 +502,8 @@ export class ShallowWaterSim {
       }
       if (source.targetLevel === null) {
         hasUnbounded = true
-        // 「不限制目标水位」不代表可以无限注水：用「水源处地形 + 每次注水量」
-        // 作为本地压力水头，注满后停止、水排走后再补充，避免数秒灌到千米级。
+        // 无目标水位时用「水源处地形 + 每次注水量」作为本地压力水头，
+        // 达到即停止注水，避免持续注水把水深推到千米级。
         const terrainRel = sampleFieldHeight(this.terrain, source.x, source.z)
         uniformTarget.set(terrainRel + Math.max(source.amount, 0.5), 2, 0, 0)
       } else {
@@ -491,10 +514,17 @@ export class ShallowWaterSim {
       }
     }
 
-    this.depthMaterial.uniforms.uSourceCount.value = this.sources.length
+    this.uniform(this.depthMaterial, 'uSourceCount').value = this.sources.length
     const capEnabled = hasTargetCap && !hasUnbounded
-    this.depthMaterial.uniforms.uHasCap.value = capEnabled ? 1 : 0
-    this.depthMaterial.uniforms.uCapRel.value = capEnabled ? capRel : 0
+    this.uniform(this.depthMaterial, 'uHasCap').value = capEnabled ? 1 : 0
+    this.uniform(this.depthMaterial, 'uCapRel').value = capEnabled ? capRel : 0
+  }
+
+  /** 取材质 uniform；缺失说明着色器与 TS 类型定义不同步，直接抛错而不是静默写 undefined。 */
+  private uniform(material: THREE.ShaderMaterial, name: string): THREE.IUniform {
+    const uniform = material.uniforms[name]
+    if (!uniform) throw new Error(`ShallowWaterSim: 材质缺少 uniform ${name}`)
+    return uniform
   }
 
   /** 同步读回统计：先渲染 4x4 降采样统计，再读回小纹理（远小于整张状态纹理）。 */
@@ -504,7 +534,9 @@ export class ShallowWaterSim {
     const requiredLength = pixelCount * 4
     let buffer = this.statsBuffer
     if (!buffer || buffer.length !== requiredLength) {
-      buffer = this.useFloatTextures ? new Float32Array(requiredLength) : new Uint16Array(requiredLength)
+      buffer = this.useFloatTextures
+        ? new Float32Array(requiredLength)
+        : new Uint16Array(requiredLength)
       this.statsBuffer = buffer
     }
 
@@ -512,7 +544,7 @@ export class ShallowWaterSim {
     const previousAutoClear = this.renderer.autoClear
     this.renderer.autoClear = false
     try {
-      this.statsMaterial.uniforms.uState.value = this.stateTexture
+      this.uniform(this.statsMaterial, 'uState').value = this.stateTexture
       this.renderPass(this.statsMaterial, this.statsTarget)
     } catch (error) {
       console.warn('[ShallowWaterSim] 统计 pass 失败', error)
@@ -534,16 +566,16 @@ export class ShallowWaterSim {
     if (this.useFloatTextures) {
       const floats = buffer as Float32Array
       for (let i = 0; i < pixelCount; i++) {
-        const wet = floats[i * 4]
-        const depth = floats[i * 4 + 1]
+        const wet = floats[i * 4] ?? 0
+        const depth = floats[i * 4 + 1] ?? 0
         if (Number.isFinite(wet) && wet > 0) wetCells += Math.round(wet)
         if (Number.isFinite(depth) && depth > maxDepth) maxDepth = depth
       }
     } else {
       const half = buffer as Uint16Array
       for (let i = 0; i < pixelCount; i++) {
-        const wet = THREE.DataUtils.fromHalfFloat(half[i * 4])
-        const depth = THREE.DataUtils.fromHalfFloat(half[i * 4 + 1])
+        const wet = THREE.DataUtils.fromHalfFloat(half[i * 4] ?? 0)
+        const depth = THREE.DataUtils.fromHalfFloat(half[i * 4 + 1] ?? 0)
         if (Number.isFinite(wet) && wet > 0) wetCells += Math.round(wet)
         if (Number.isFinite(depth) && depth > maxDepth) maxDepth = depth
       }

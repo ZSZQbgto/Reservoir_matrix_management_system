@@ -11,6 +11,7 @@
  */
 import type { Viewer } from 'tellux'
 import type { CloudsEffect } from '@takram/three-clouds'
+import { clamp } from '../shared/math'
 
 export interface CloudTuning {
   /** 主光线最小步长 30–150 m：越大采样越少、越省 GPU，但可能出现步进纹。 */
@@ -56,8 +57,23 @@ type EffectInternals = Pick<
   >
 }
 
-const clamp = (value: number, min: number, max: number): number =>
-  Math.min(max, Math.max(min, value))
+const CLOUD_KEYS = ['minStepSize', 'maxIterationCount', 'maxIterationCountToSun'] as const
+type CloudKey = (typeof CLOUD_KEYS)[number]
+
+const INTEGER_KEYS = new Set<keyof CloudTuning>(['maxIterationCount', 'maxIterationCountToSun'])
+const TUNING_KEYS = Object.keys(CLOUD_TUNING_RANGES) as Array<keyof CloudTuning>
+
+const isCloudKey = (key: keyof CloudTuning): key is CloudKey =>
+  (CLOUD_KEYS as readonly string[]).includes(key)
+
+function readField(effect: EffectInternals, key: keyof CloudTuning): unknown {
+  return isCloudKey(key) ? effect.clouds[key] : effect[key]
+}
+
+function writeField(effect: EffectInternals, key: keyof CloudTuning, value: number): void {
+  if (isCloudKey(key)) effect.clouds[key] = value
+  else effect[key] = value
+}
 
 /**
  * 取得 Tellux 内部的 CloudsEffect。
@@ -69,9 +85,9 @@ export function resolveCloudsEffect(viewer: Viewer): EffectInternals | null {
   const atmosphere = (viewer as unknown as { atmosphere?: { cloudsEffect?: EffectInternals } })
     .atmosphere
   const effect = atmosphere?.cloudsEffect
-  if (!effect) return null
-  if (!effect.clouds || typeof effect.clouds.maxIterationCount !== 'number') return null
-  if (typeof effect.clouds.minStepSize !== 'number') return null
+  if (!effect || !effect.clouds) return null
+  // 逐字段校验：Tellux 改版后缺任何一个，number 类型假设都会在运行时失效。
+  if (TUNING_KEYS.some((key) => typeof readField(effect, key) !== 'number')) return null
   return effect
 }
 
@@ -87,33 +103,32 @@ export function readCloudTuning(effect: EffectInternals): CloudTuning {
   }
 }
 
-/** 写入并裁剪到安全范围。 */
+/** 写入并裁剪到安全范围（范围只在 `CLOUD_TUNING_RANGES` 维护一份）。 */
 export function applyCloudTuning(effect: EffectInternals, tuning: CloudTuning): void {
-  effect.clouds.minStepSize = clamp(tuning.minStepSize, 30, 150)
-  effect.clouds.maxIterationCount = Math.round(clamp(tuning.maxIterationCount, 120, 500))
-  effect.clouds.maxIterationCountToSun = Math.round(
-    clamp(tuning.maxIterationCountToSun, 0, 4)
-  )
-  effect.scatteringCoefficient = clamp(tuning.scatteringCoefficient, 0.2, 2)
-  effect.absorptionCoefficient = clamp(tuning.absorptionCoefficient, 0, 0.5)
-  effect.turbulenceDisplacement = clamp(tuning.turbulenceDisplacement, 0, 1000)
+  for (const key of TUNING_KEYS) {
+    const range = CLOUD_TUNING_RANGES[key]
+    const value = clamp(tuning[key], range.min, range.max)
+    writeField(effect, key, INTEGER_KEYS.has(key) ? Math.round(value) : value)
+  }
 }
 
 /** 归一化 localStorage / 旧版本中读取的调参对象。 */
 export function normalizeCloudTuning(raw: unknown): CloudTuning {
   const input = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
-  const numberOr = (key: keyof CloudTuning): number => {
-    const value = input[key]
-    return typeof value === 'number' && Number.isFinite(value)
-      ? value
-      : CLOUD_TUNING_DEFAULTS[key]
+  const value = (key: keyof CloudTuning): number => {
+    const range = CLOUD_TUNING_RANGES[key]
+    const candidate = input[key]
+    const fallback = CLOUD_TUNING_DEFAULTS[key]
+    const source =
+      typeof candidate === 'number' && Number.isFinite(candidate) ? candidate : fallback
+    return clamp(source, range.min, range.max)
   }
   return {
-    minStepSize: numberOr('minStepSize'),
-    maxIterationCount: numberOr('maxIterationCount'),
-    maxIterationCountToSun: numberOr('maxIterationCountToSun'),
-    scatteringCoefficient: numberOr('scatteringCoefficient'),
-    absorptionCoefficient: numberOr('absorptionCoefficient'),
-    turbulenceDisplacement: numberOr('turbulenceDisplacement')
+    minStepSize: value('minStepSize'),
+    maxIterationCount: value('maxIterationCount'),
+    maxIterationCountToSun: value('maxIterationCountToSun'),
+    scatteringCoefficient: value('scatteringCoefficient'),
+    absorptionCoefficient: value('absorptionCoefficient'),
+    turbulenceDisplacement: value('turbulenceDisplacement')
   }
 }

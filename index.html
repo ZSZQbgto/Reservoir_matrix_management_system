@@ -8,11 +8,11 @@
       name="description"
       content="Tellux 三维地球 · Cesium World Terrain · Cesium Ion / ArcGIS 影像 · 基于浅水方程的水体编辑器"
     />
-    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <link rel="icon" type="image/svg+xml" href="./src/assets/favicon.svg" />
     <title>Tellux Earth · Cesium 地形 · 水体编辑</title>
   </head>
   <body data-mode="scene">
-    <div id="viewer" aria-label="三维地球视口"></div>
+    <div id="viewer" role="region" aria-label="三维地球视口"></div>
 
     <div class="atmosphere-vignette" aria-hidden="true"></div>
     <div class="grain" aria-hidden="true"></div>
@@ -30,10 +30,22 @@
 
         <nav class="mode-dock" id="mode-dock" aria-label="编辑模式">
           <span class="mode-glider" id="mode-glider" aria-hidden="true"></span>
-          <button type="button" class="mode-button is-active" id="mode-scene" data-mode="scene" aria-pressed="true">
+          <button
+            type="button"
+            class="mode-button is-active"
+            id="mode-scene"
+            data-mode="scene"
+            aria-pressed="true"
+          >
             <span class="mode-glyph" aria-hidden="true"></span>浏览
           </button>
-          <button type="button" class="mode-button" id="mode-water" data-mode="water" aria-pressed="false">
+          <button
+            type="button"
+            class="mode-button"
+            id="mode-water"
+            data-mode="water"
+            aria-pressed="false"
+          >
             <span class="mode-glyph" aria-hidden="true"></span>水体编辑
           </button>
         </nav>
@@ -48,9 +60,7 @@
           <span class="status-pill" id="cloud-status">
             <i></i><b>体积云</b><span>已关闭</span>
           </span>
-          <span class="status-pill" id="clock-status">
-            <i></i><b>时间</b><span>—</span>
-          </span>
+          <span class="status-pill" id="clock-status"> <i></i><b>时间</b><span>—</span> </span>
         </div>
       </header>
 
@@ -77,7 +87,9 @@
                 <span>固定模拟区</span>
                 <b>8 km × 8 km</b>
               </div>
-              <p class="water-domain-meta" id="water-domain-meta">116.77000°, 36.02000°（尚未建立）</p>
+              <p class="water-domain-meta" id="water-domain-meta">
+                116.77000°, 36.02000°（尚未建立）
+              </p>
               <button type="button" class="ghost-button wide" id="water-rebuild-domain">
                 重建模拟域
               </button>
@@ -89,7 +101,13 @@
 
         <div class="stage-right">
           <aside class="console" id="console" aria-label="场景控制台">
-            <button class="console-toggle" id="console-toggle" type="button" aria-expanded="true" aria-controls="console-body">
+            <button
+              class="console-toggle"
+              id="console-toggle"
+              type="button"
+              aria-expanded="true"
+              aria-controls="console-body"
+            >
               <span>场景控制</span>
               <span class="console-toggle-side">
                 <span class="chevron" aria-hidden="true"></span>
@@ -115,12 +133,26 @@
 
                 <label class="range-row" for="cloud-altitude">
                   <span>云底高度 <output id="cloud-altitude-value">9000 m</output></span>
-                  <input id="cloud-altitude" type="range" min="800" max="16000" step="100" value="9000" />
+                  <input
+                    id="cloud-altitude"
+                    type="range"
+                    min="800"
+                    max="16000"
+                    step="100"
+                    value="9000"
+                  />
                 </label>
 
                 <label class="range-row" for="cloud-height">
                   <span>云层厚度 <output id="cloud-height-value">800 m</output></span>
-                  <input id="cloud-height" type="range" min="120" max="4000" step="20" value="800" />
+                  <input
+                    id="cloud-height"
+                    type="range"
+                    min="120"
+                    max="4000"
+                    step="20"
+                    value="800"
+                  />
                 </label>
 
                 <label class="range-row" for="cloud-speed">
@@ -165,7 +197,14 @@
 
                 <label class="range-row" for="cloud-shadow-quality">
                   <span>云影质量 <output id="cloud-shadow-quality-value">中</output></span>
-                  <input id="cloud-shadow-quality" type="range" min="0" max="2" step="1" value="1" />
+                  <input
+                    id="cloud-shadow-quality"
+                    type="range"
+                    min="0"
+                    max="2"
+                    step="1"
+                    value="1"
+                  />
                 </label>
               </section>
 
@@ -181,27 +220,62 @@
 
                 <label class="range-row" for="cloud-iterations">
                   <span>主步进上限 <output id="cloud-iterations-value">400</output></span>
-                  <input id="cloud-iterations" type="range" min="120" max="500" step="10" value="400" />
+                  <input
+                    id="cloud-iterations"
+                    type="range"
+                    min="120"
+                    max="500"
+                    step="10"
+                    value="400"
+                  />
                 </label>
 
                 <label class="range-row" for="cloud-sun-iterations">
                   <span>太阳步进上限 <output id="cloud-sun-iterations-value">2</output></span>
-                  <input id="cloud-sun-iterations" type="range" min="0" max="4" step="1" value="2" />
+                  <input
+                    id="cloud-sun-iterations"
+                    type="range"
+                    min="0"
+                    max="4"
+                    step="1"
+                    value="2"
+                  />
                 </label>
 
                 <label class="range-row" for="cloud-scattering">
                   <span>散射强度 <output id="cloud-scattering-value">1.00</output></span>
-                  <input id="cloud-scattering" type="range" min="0.2" max="2" step="0.05" value="1" />
+                  <input
+                    id="cloud-scattering"
+                    type="range"
+                    min="0.2"
+                    max="2"
+                    step="0.05"
+                    value="1"
+                  />
                 </label>
 
                 <label class="range-row" for="cloud-absorption">
                   <span>吸收强度 <output id="cloud-absorption-value">0.00</output></span>
-                  <input id="cloud-absorption" type="range" min="0" max="0.5" step="0.01" value="0" />
+                  <input
+                    id="cloud-absorption"
+                    type="range"
+                    min="0"
+                    max="0.5"
+                    step="0.01"
+                    value="0"
+                  />
                 </label>
 
-                <label class="range-row" for="cloud-turbulence">
+                <label class="range-row" for="cloud-turbulence-displacement">
                   <span>湍流位移 <output id="cloud-turbulence-value">350 m</output></span>
-                  <input id="cloud-turbulence" type="range" min="0" max="1000" step="10" value="350" />
+                  <input
+                    id="cloud-turbulence-displacement"
+                    type="range"
+                    min="0"
+                    max="1000"
+                    step="10"
+                    value="350"
+                  />
                 </label>
               </section>
 
@@ -236,7 +310,12 @@
             </div>
           </aside>
 
-          <aside class="water-panel water-panel-right" id="water-right" aria-label="水体参数" hidden>
+          <aside
+            class="water-panel water-panel-right"
+            id="water-right"
+            aria-label="水体参数"
+            hidden
+          >
             <div class="panel-head">
               <span>水体参数</span>
               <span class="panel-head-side">
@@ -270,7 +349,14 @@
 
                 <label class="range-row" for="water-inject-interval">
                   <span>注水间隔 <output id="water-inject-interval-value">0.033 s</output></span>
-                  <input id="water-inject-interval" type="range" min="1" max="8" step="1" value="2" />
+                  <input
+                    id="water-inject-interval"
+                    type="range"
+                    min="1"
+                    max="8"
+                    step="1"
+                    value="2"
+                  />
                 </label>
 
                 <label class="range-row" for="water-resolution">
@@ -280,12 +366,26 @@
 
                 <label class="range-row" for="water-max-flow-speed">
                   <span>最大流速 <output id="water-max-flow-speed-value">30 m/s</output></span>
-                  <input id="water-max-flow-speed" type="range" min="5" max="60" step="1" value="30" />
+                  <input
+                    id="water-max-flow-speed"
+                    type="range"
+                    min="5"
+                    max="60"
+                    step="1"
+                    value="30"
+                  />
                 </label>
 
                 <label class="range-row" for="water-damping">
                   <span>流动阻尼 <output id="water-damping-value">0.995</output></span>
-                  <input id="water-damping" type="range" min="0.9" max="1" step="0.005" value="0.995" />
+                  <input
+                    id="water-damping"
+                    type="range"
+                    min="0.9"
+                    max="1"
+                    step="0.005"
+                    value="0.995"
+                  />
                 </label>
 
                 <div class="water-button-row">
@@ -313,7 +413,14 @@
 
                 <label class="range-row" for="water-source-radius">
                   <span>水源半径 <output id="water-source-radius-value">150 m</output></span>
-                  <input id="water-source-radius" type="range" min="20" max="2000" step="10" value="150" />
+                  <input
+                    id="water-source-radius"
+                    type="range"
+                    min="20"
+                    max="2000"
+                    step="10"
+                    value="150"
+                  />
                 </label>
 
                 <label class="text-row" for="water-source-target">
@@ -327,7 +434,9 @@
                   <span class="switch" aria-hidden="true"></span>
                 </label>
 
-                <button type="button" class="danger-button wide" id="water-source-delete">删除该水源</button>
+                <button type="button" class="danger-button wide" id="water-source-delete">
+                  删除该水源
+                </button>
               </section>
 
               <section class="control-section">
@@ -347,7 +456,14 @@
 
                 <label class="range-row" for="water-reflection">
                   <span>天空反射 <output id="water-reflection-value">1.00</output></span>
-                  <input id="water-reflection" type="range" min="0" max="1.5" step="0.05" value="1" />
+                  <input
+                    id="water-reflection"
+                    type="range"
+                    min="0"
+                    max="1.5"
+                    step="0.05"
+                    value="1"
+                  />
                 </label>
 
                 <label class="range-row" for="water-clarity">
@@ -373,7 +489,14 @@
 
                 <label class="range-row" for="water-ripple-scale">
                   <span>波纹尺度 <output id="water-ripple-scale-value">1.00</output></span>
-                  <input id="water-ripple-scale" type="range" min="0.4" max="2.5" step="0.05" value="1" />
+                  <input
+                    id="water-ripple-scale"
+                    type="range"
+                    min="0.4"
+                    max="2.5"
+                    step="0.05"
+                    value="1"
+                  />
                 </label>
 
                 <label class="range-row" for="water-flow-speed">
@@ -386,7 +509,9 @@
                   <input id="water-foam" type="range" min="0" max="2" step="0.05" value="1" />
                 </label>
 
-                <button type="button" class="ghost-button wide" id="water-appearance-reset">恢复默认外观</button>
+                <button type="button" class="ghost-button wide" id="water-appearance-reset">
+                  恢复默认外观
+                </button>
               </section>
 
               <section class="control-section">
@@ -398,7 +523,12 @@
                   <button type="button" class="ghost-button" id="water-save">保存</button>
                   <button type="button" class="ghost-button" id="water-export">导出 JSON</button>
                   <button type="button" class="ghost-button" id="water-import">导入 JSON</button>
-                  <input type="file" id="water-import-file" accept="application/json,.json" hidden />
+                  <input
+                    type="file"
+                    id="water-import-file"
+                    accept="application/json,.json"
+                    hidden
+                  />
                 </div>
 
                 <p class="water-project-status" id="water-project-status" aria-live="polite"></p>
@@ -439,9 +569,7 @@
     <div class="water-labels" id="water-labels" aria-hidden="true" hidden></div>
 
     <div class="loader" id="loader" role="status" aria-live="polite">
-      <div class="loader-orbit" aria-hidden="true">
-        <span></span><span></span><span></span>
-      </div>
+      <div class="loader-orbit" aria-hidden="true"><span></span><span></span><span></span></div>
       <div class="loader-copy">
         <strong>正在构建三维地球</strong>
         <small id="loader-detail">初始化渲染管线…</small>

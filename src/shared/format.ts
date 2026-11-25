@@ -1,8 +1,8 @@
 /**
  * HUD 文案格式化。
  *
- * 界面时间统一用「北京时间分钟数」（0–1439）表示，换算到固定场景日期：
- * 太阳方向随滑杆变化，而不是随真实运行时刻漂移，方便对比与截图。
+ * 场景时间统一用「北京时间分钟数」（0–1439）表示，换算到固定场景日期：
+ * 太阳方向只随该值变化，不随真实运行时刻漂移。
  */
 
 /** 场景固定日期（UTC）：2026-11-17 00:00。 */
@@ -41,4 +41,15 @@ export function formatAltitude(meters: number): string {
     return `${(meters / 1000).toFixed(meters >= 100_000 ? 0 : 1)} km`
   }
   return `${meters.toFixed(0)} m`
+}
+
+/** 高程 → `1.23 km` / `850.0 m`；无效值回落为 `—`（水源面板与列表用）。 */
+export function formatElevation(value: number | null | undefined): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '—'
+  return value >= 1000 ? `${(value / 1000).toFixed(2)} km` : `${value.toFixed(1)} m`
+}
+
+/** 经纬度 → `116.77000°, 36.02000°`（模拟域说明用）。 */
+export function formatLonLat(longitude: number, latitude: number): string {
+  return `${longitude.toFixed(5)}°, ${latitude.toFixed(5)}°`
 }
