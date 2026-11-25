@@ -30,6 +30,7 @@ test('默认状态合法', () => {
   assert.equal(state.version, WATER_STATE_VERSION)
   assert.equal(state.enabled, true)
   assert.equal(state.domain, null)
+  assert.equal(state.gateOpeningMeters, 0)
   assert.equal(state.sources.length, 0)
   assert.equal(state.sim.speed, 1)
   assert.equal(state.sim.waterAmount, 15)
@@ -202,6 +203,15 @@ test('模拟域固定为 116.77, 36.02 的 8 km × 8 km', () => {
   assert.equal(normalizeWaterState({ domain: null }).domain, null)
   assert.equal(createDefaultState().domain, null)
   assert.equal(WATER_DOMAIN.sizeMeters, 8000)
+})
+
+test('闸门开度归一化', () => {
+  assert.equal(normalizeWaterState({ gateOpeningMeters: 2.5 }).gateOpeningMeters, 2.5)
+  assert.equal(normalizeWaterState({ gateOpeningMeters: 99 }).gateOpeningMeters, 5)
+  assert.equal(normalizeWaterState({ gateOpeningMeters: -3 }).gateOpeningMeters, 0)
+  assert.equal(normalizeWaterState({ gateOpeningMeters: 'x' }).gateOpeningMeters, 0)
+  const cloned = cloneState(normalizeWaterState({ gateOpeningMeters: 3 }))
+  assert.equal(cloned.gateOpeningMeters, 3)
 })
 
 test('模拟速度上限为 64×', () => {

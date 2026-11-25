@@ -17,6 +17,8 @@ export const WATER_STATE_VERSION = 1
 export const WATER_STORAGE_KEY = 'tellux-water-editor-v1'
 export const WATER_MODE_STORAGE_KEY = 'tellux-water-editor-mode-v1'
 export const MAX_WATER_SOURCES = 8
+/** 闸门开度上限（米）。 */
+export const GATE_MAX_OPENING_METERS = 5
 
 /** 水源半径（米）：数据层允许 20–3000。 */
 export const SOURCE_RADIUS_RANGE = { min: 20, max: 3000 } as const
@@ -130,6 +132,8 @@ export interface WaterState {
   enabled: boolean
   /** 模拟域；null = 尚未建立。 */
   domain: WaterDomainState | null
+  /** 闸门开度（米）：0 = 关闭贴地，>0 = 底部过流。 */
+  gateOpeningMeters: number
   sim: WaterSimSettings
   visual: WaterVisualSettings
   sources: WaterSource[]
@@ -156,6 +160,21 @@ export interface SimTerrain {
   heights: Float32Array
 }
 
+/**
+ * 水工结构高度场：与模拟网格同分辨率，值为在地形之上抬升的米数。
+ *
+ * 模拟着色器把 A 通道写成 `地形 + 结构`，因此坝体会像一段高地形一样挡水；
+ * 结构高度为 0 的格子完全等价于原地形。
+ */
+export interface SimStructure {
+  origin: LonLat
+  sizeMeters: number
+  resolution: number
+  baseElevation: number
+  /** length = resolution²，相对 baseElevation 的附加高度；0 = 无结构。 */
+  heights: Float32Array
+}
+
 export interface SimSource {
   /** 相对域中心的东向偏移（米）。 */
   x: number
@@ -167,6 +186,22 @@ export interface SimSource {
   /** 每次注水水深（米）。 */
   amount: number
   enabled: boolean
+}
+
+/** 三类模型与水体交互方式。 */
+export type WaterModelKind = 'permeable' | 'terrain' | 'gate'
+
+/** 闸门底部过流的模拟几何（与闸门模型共用同一组参数）。 */
+export interface SimGate {
+  centerX: number
+  centerZ: number
+  /** 坝轴单位向量。 */
+  axisX: number
+  axisZ: number
+  widthMeters: number
+  thicknessMeters: number
+  /** 闸墙两侧的移水条带宽度（米）。 */
+  bandMeters: number
 }
 
 export interface SimSettings {
@@ -247,6 +282,7 @@ export function cloneState(state: WaterState): WaterState {
     version: state.version,
     enabled: state.enabled,
     domain: state.domain ? { ...state.domain } : null,
+    gateOpeningMeters: state.gateOpeningMeters,
     sim: { ...state.sim },
     visual: { ...state.visual },
     sources: state.sources.map((source) => ({ ...source }))
@@ -258,6 +294,7 @@ export function createDefaultState(): WaterState {
     version: WATER_STATE_VERSION,
     enabled: true,
     domain: null,
+    gateOpeningMeters: 0,
     sim: { ...SIM_DEFAULTS, paused: false },
     visual: { ...VISUAL_DEFAULTS },
     sources: []
@@ -271,6 +308,9 @@ export function normalizeWaterState(raw: unknown): WaterState {
   const input = raw as Record<string, unknown>
 
   const enabled = typeof input.enabled === 'boolean' ? input.enabled : defaults.enabled
+  const gateOpeningMeters = isFiniteNumber(input.gateOpeningMeters)
+    ? clamp(input.gateOpeningMeters, 0, GATE_MAX_OPENING_METERS)
+    : defaults.gateOpeningMeters
 
   let domain: WaterDomainState | null = null
   const rawDomain = input.domain
@@ -375,6 +415,7 @@ export function normalizeWaterState(raw: unknown): WaterState {
     version: WATER_STATE_VERSION,
     enabled,
     domain,
+    gateOpeningMeters,
     sim,
     visual,
     sources

@@ -14,6 +14,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createTileCache } from './scripts/tile-cache.mjs'
+import { createLiveStateStore, readJsonBody, sendLiveJson } from './scripts/live-state.mjs'
 
 const root = path.dirname(fileURLToPath(import.meta.url))
 const distDir = path.join(root, 'dist')
@@ -29,6 +30,7 @@ const port = Number(process.env.PORT || 8090)
 const host = process.env.HOST || '127.0.0.1'
 
 const localTileCache = createTileCache({ root, token: process.env.CESIUM_ION_TOKEN || '' })
+const liveState = createLiveStateStore(root)
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -121,6 +123,25 @@ const server = http.createServer(async (req, res) => {
 
   if (pathname === '/healthz') {
     sendJson(res, 200, { ok: true, uptime: process.uptime() })
+    return
+  }
+
+  if (pathname === '/api/live-state') {
+    if (req.method === 'GET') {
+      sendLiveJson(res, 200, liveState.read())
+      return
+    }
+    if (req.method === 'POST') {
+      try {
+        sendLiveJson(res, 200, liveState.merge(await readJsonBody(req)))
+      } catch (error) {
+        const status = error instanceof Error && error.message === 'payload_too_large' ? 413 : 400
+        sendLiveJson(res, status, { error: 'invalid_live_state' })
+      }
+      return
+    }
+    res.writeHead(405, { allow: 'GET, POST' })
+    res.end()
     return
   }
 

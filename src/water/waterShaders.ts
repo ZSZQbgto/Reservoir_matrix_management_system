@@ -46,6 +46,29 @@ uniform float uLift;
 out vec2 vStateUv;
 out vec3 vViewPosition;
 
+/**
+ * 取邻域内已湿格的水面高程。
+ *
+ * 干格（模型/岸边）如果直接用自己的地形高程，水面网格会在湿格与干格之间
+ * 拉出一个斜坡。这里让干格顶点抬到邻域水面高程，水面保持水平，再由片元
+ * 的 depth 裁剪切出竖直边界，不再沿模型“爬坡”。
+ */
+float wetSurfaceNear(vec2 stateUv) {
+  vec2 texel = vec2(1.0 / uSimResolution);
+  float best = -1e8;
+  vec4 s0 = textureLod(uStateTexture, stateUv, 0.0);
+  vec4 s1 = textureLod(uStateTexture, stateUv + vec2(texel.x, 0.0), 0.0);
+  vec4 s2 = textureLod(uStateTexture, stateUv - vec2(texel.x, 0.0), 0.0);
+  vec4 s3 = textureLod(uStateTexture, stateUv + vec2(0.0, texel.y), 0.0);
+  vec4 s4 = textureLod(uStateTexture, stateUv - vec2(0.0, texel.y), 0.0);
+  if (s0.r > 0.03) best = max(best, s0.a + s0.r);
+  if (s1.r > 0.03) best = max(best, s1.a + s1.r);
+  if (s2.r > 0.03) best = max(best, s2.a + s2.r);
+  if (s3.r > 0.03) best = max(best, s3.a + s3.r);
+  if (s4.r > 0.03) best = max(best, s4.a + s4.r);
+  return best;
+}
+
 void main() {
   vec2 stateUv = uv;
   vec4 state = sampleStateBilinear(stateUv);
@@ -56,6 +79,10 @@ void main() {
   // 有水的网格点则抬升 uLift，避免与真实地形 z-fighting。
   float sink = (1.0 - smoothstep(0.0, 0.6, depth)) * 1.4;
   float surfaceRel = terrainRel + depth + uLift - sink;
+  if (depth <= 0.08) {
+    float wetSurface = wetSurfaceNear(stateUv);
+    surfaceRel = wetSurface > -1e7 ? wetSurface + uLift : terrainRel - 1.4;
+  }
 
   vec3 localPosition = vec3(position.x, surfaceRel, position.z);
   vStateUv = stateUv;
@@ -97,6 +124,14 @@ uniform float uGlintStrength;
 // 由 WaterSurface 在 onBeforeRender 里更新；片元着色器拿不到 modelViewMatrix。
 uniform mat3 uViewRotation;
 
+// 闸门实体墙：水面在墙格内直接裁掉，避免水面爬上门体/闸门叶。
+uniform float uGateActive;
+uniform vec2 uGateCenter;
+uniform vec2 uGateAxis;
+uniform vec2 uGateNormal;
+uniform float uGateSolidHalfWidth;
+uniform float uGateSolidHalfThickness;
+
 in vec2 vStateUv;
 in vec3 vViewPosition;
 
@@ -110,7 +145,16 @@ void main() {
   // 逐像素双线性水深：岸线/透明度在亚网格尺度连续，避免网格锯齿。
   vec4 centerState = sampleStateBilinear(vStateUv);
   float depth = max(centerState.r, 0.0);
-  if (depth < 0.035) discard;
+  if (uGateActive > 0.5) {
+    vec2 gatePosition = (vStateUv - 0.5) * uSize;
+    vec2 gateDelta = gatePosition - uGateCenter;
+    if (abs(dot(gateDelta, uGateAxis)) <= uGateSolidHalfWidth &&
+        abs(dot(gateDelta, uGateNormal)) <= uGateSolidHalfThickness) {
+      discard;
+    }
+  }
+  // 低于 8 cm 的水膜不渲染：贴地/闸门模型边缘不再出现“毛细”水膜。
+  if (depth < 0.08) discard;
   vec2 flow = centerState.gb;
   float flowSpeed = length(flow);
 
@@ -238,7 +282,7 @@ void main() {
   color = mix(color, uFoamColor, foam);
 
   // ---- 极浅水 / 域边界 alpha 淡出 ----
-  float depthFade = smoothstep(0.035, 0.3, depth);
+  float depthFade = smoothstep(0.08, 0.3, depth);
   waterAlpha *= depthFade * edgeFade;
   float alpha = max(waterAlpha, foam * 0.75 * edgeFade);
 

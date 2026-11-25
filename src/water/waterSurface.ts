@@ -16,7 +16,7 @@
 
 import * as THREE from 'three'
 import type { Viewer } from 'tellux'
-import type { SurfaceDomain, WaterVisualSettings } from './types'
+import type { SimGate, SurfaceDomain, WaterVisualSettings } from './types'
 import { VISUAL_DEFAULTS, clamp } from './types'
 import { WATER_FRAGMENT_SHADER, WATER_VERTEX_SHADER } from './waterShaders'
 import {
@@ -138,7 +138,13 @@ type WaterSurfaceUniforms = Record<
   | 'uShallowColor'
   | 'uFoamColor'
   | 'uGlintStrength'
-  | 'uViewRotation',
+  | 'uViewRotation'
+  | 'uGateActive'
+  | 'uGateCenter'
+  | 'uGateAxis'
+  | 'uGateNormal'
+  | 'uGateSolidHalfWidth'
+  | 'uGateSolidHalfThickness',
   THREE.IUniform
 >
 
@@ -209,7 +215,13 @@ export class WaterSurface {
       uShallowColor: { value: this.shallowColor },
       uFoamColor: { value: this.foamColor },
       uGlintStrength: { value: 1 },
-      uViewRotation: { value: this.viewRotation }
+      uViewRotation: { value: this.viewRotation },
+      uGateActive: { value: 0 },
+      uGateCenter: { value: new THREE.Vector2(0, 0) },
+      uGateAxis: { value: new THREE.Vector2(1, 0) },
+      uGateNormal: { value: new THREE.Vector2(0, 1) },
+      uGateSolidHalfWidth: { value: 0 },
+      uGateSolidHalfThickness: { value: 0 }
     }
 
     this.material = new THREE.ShaderMaterial({
@@ -292,6 +304,26 @@ export class WaterSurface {
     this.uniforms.uFoam.value = this.visual.foam
     this.uniforms.uClarity.value = this.visual.clarity
     this.uniforms.uOpacity.value = this.visual.opacity
+  }
+
+  /**
+   * 闸门/墙体裁水：水面片元在实体矩形内直接 discard。
+   *
+   * 与模拟层的闸门实体墙使用同一组几何（中心/轴向/宽/厚），因此水面边界
+   * 和挡水体一致，不会在模型表面形成斜坡或水膜。
+   */
+  setGate(gate: SimGate | null, cellWidth: number): void {
+    if (this.disposed) return
+    this.uniforms.uGateActive.value = gate ? 1 : 0
+    if (!gate) return
+    const center = this.uniforms.uGateCenter.value as THREE.Vector2
+    const axis = this.uniforms.uGateAxis.value as THREE.Vector2
+    const normal = this.uniforms.uGateNormal.value as THREE.Vector2
+    center.set(gate.centerX, gate.centerZ)
+    axis.set(gate.axisX, gate.axisZ)
+    normal.set(-gate.axisZ, gate.axisX)
+    this.uniforms.uGateSolidHalfWidth.value = gate.widthMeters / 2 + cellWidth
+    this.uniforms.uGateSolidHalfThickness.value = Math.max(gate.thicknessMeters / 2, cellWidth)
   }
 
   /** 设置太阳方向：单位向量，分量顺序 [east, up, north]。 */

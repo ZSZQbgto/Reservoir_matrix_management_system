@@ -1,7 +1,9 @@
 import { defineConfig, loadEnv, type Connect, type Plugin } from 'vite'
+import react from '@vitejs/plugin-react'
 import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createTileCache } from './scripts/tile-cache.mjs'
+import { createLiveStateStore, readJsonBody, sendLiveJson } from './scripts/live-state.mjs'
 
 const rootDir = dirname(fileURLToPath(import.meta.url))
 
@@ -46,6 +48,42 @@ function tileCachePlugin(token: string): Plugin {
   }
 }
 
+function liveStatePlugin(): Plugin {
+  const store = createLiveStateStore(rootDir)
+  const middleware: Connect.NextHandleFunction = async (req, res, next) => {
+    const pathname = (req.url || '/').split('?')[0]
+    if (pathname !== '/api/live-state') {
+      next()
+      return
+    }
+    if (req.method === 'GET') {
+      sendLiveJson(res, 200, store.read())
+      return
+    }
+    if (req.method === 'POST') {
+      try {
+        const body = await readJsonBody(req)
+        sendLiveJson(res, 200, store.merge(body))
+      } catch (error) {
+        const status = error instanceof Error && error.message === 'payload_too_large' ? 413 : 400
+        sendLiveJson(res, status, { error: 'invalid_live_state' })
+      }
+      return
+    }
+    res.writeHead(405, { allow: 'GET, POST' })
+    res.end()
+  }
+  return {
+    name: 'tellux-live-state',
+    configureServer(server) {
+      server.middlewares.use(middleware)
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use(middleware)
+    }
+  }
+}
+
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
 
@@ -53,7 +91,7 @@ export default defineConfig(({ mode }) => {
     root: rootDir,
     base: resolveBasePath(),
     envDir: rootDir,
-    plugins: [tileCachePlugin(env.CESIUM_ION_TOKEN || '')],
+    plugins: [tileCachePlugin(env.CESIUM_ION_TOKEN || ''), liveStatePlugin(), react()],
     resolve: {
       dedupe: ['three']
     },

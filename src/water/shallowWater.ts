@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import type { SimSettings, SimSource, SimStats, SimTerrain } from './types'
+import type { SimGate, SimSettings, SimSource, SimStats, SimStructure, SimTerrain } from './types'
 import {
   MAX_WATER_SOURCES,
   SOURCE_AMOUNT_RANGE,
@@ -92,6 +92,8 @@ export class ShallowWaterSim {
   private readonly statsTarget: THREE.WebGLRenderTarget
   private readonly statsSize: number
   private readonly terrainTexture: THREE.DataTexture
+  /** 水工结构附加高度（相对基准高程）；0 表示原地形。 */
+  private structureTexture: THREE.DataTexture
 
   private readonly scene: THREE.Scene
   private readonly camera: THREE.OrthographicCamera
@@ -124,7 +126,11 @@ export class ShallowWaterSim {
   private statsBuffer: StatsArray | null = null
   private disposed = false
 
-  constructor(renderer: THREE.WebGLRenderer, terrain: SimTerrain) {
+  constructor(
+    renderer: THREE.WebGLRenderer,
+    terrain: SimTerrain,
+    structure: SimStructure | null = null
+  ) {
     if (!renderer || typeof renderer.render !== 'function') {
       throw new Error('ShallowWaterSim: 需要有效的 THREE.WebGLRenderer')
     }
@@ -196,6 +202,9 @@ export class ShallowWaterSim {
     this.terrainTexture.wrapT = THREE.ClampToEdgeWrapping
     this.terrainTexture.needsUpdate = true
 
+    const structureHeights = this.resolveStructureHeights(structure, resolution)
+    this.structureTexture = this.createStructureTexture(structureHeights, resolution)
+
     this.geometry = new THREE.BufferGeometry()
     const positions = new Float32Array([-1, -1, 0, 3, -1, 0, -1, 3, 0])
     const uvs = new Float32Array([0, 0, 2, 0, 0, 2])
@@ -209,11 +218,13 @@ export class ShallowWaterSim {
     const targets = this.createVector4Array()
 
     this.initMaterial = this.createMaterial(INIT_FRAGMENT, {
-      uTerrain: { value: this.terrainTexture }
+      uTerrain: { value: this.terrainTexture },
+      uStructure: { value: this.structureTexture }
     })
     this.fluxMaterial = this.createMaterial(FLUX_FRAGMENT, {
       uState: { value: null },
       uResolution: { value: resolution },
+      uDomainSize: { value: this.sizeMeters },
       uCellWidth: { value: this.cellWidth },
       uDt: { value: SUBSTEP_SECONDS },
       uGravity: { value: GRAVITY },
@@ -221,7 +232,13 @@ export class ShallowWaterSim {
       // 初始值同样按子步时间补偿；setSettings 会再写一次。
       uDamping: {
         value: Math.pow(this.settings.damping, SUBSTEP_SECONDS / REFERENCE_SUBSTEP_SECONDS)
-      }
+      },
+      uGateActive: { value: 0 },
+      uGateCenter: { value: new THREE.Vector2(0, 0) },
+      uGateAxis: { value: new THREE.Vector2(1, 0) },
+      uGateNormal: { value: new THREE.Vector2(0, 1) },
+      uGateSolidHalfWidth: { value: 0 },
+      uGateSolidHalfThickness: { value: 0 }
     })
     this.depthMaterial = this.createMaterial(depthShaderSource(), {
       uState: { value: null },
@@ -238,7 +255,17 @@ export class ShallowWaterSim {
       uHasCap: { value: 0 },
       uCapRel: { value: 0 },
       uMaxDepth: { value: MAX_DEPTH },
-      uMaxFlowSpeed: { value: this.settings.maxFlowSpeed }
+      uMaxFlowSpeed: { value: this.settings.maxFlowSpeed },
+      uGateActive: { value: 0 },
+      uGateFlow: { value: 0 },
+      uGateCenter: { value: new THREE.Vector2(0, 0) },
+      uGateAxis: { value: new THREE.Vector2(1, 0) },
+      uGateNormal: { value: new THREE.Vector2(0, 1) },
+      uGateWidth: { value: 0 },
+      uGateThickness: { value: 0 },
+      uGateBand: { value: 0 },
+      uGateSolidHalfWidth: { value: 0 },
+      uGateSolidHalfThickness: { value: 0 }
     })
     this.statsMaterial = this.createMaterial(statsFragment(STATS_BLOCK), {
       // 每次读回统计前绑定当前 ping-pong 状态纹理。
@@ -263,6 +290,57 @@ export class ShallowWaterSim {
    */
   get stateTexture(): THREE.Texture {
     return this.stateTargets[this.stateIndex]!.texture
+  }
+
+  /**
+   * 替换水工结构高度场（例如开关坝体做对照验证）。
+   *
+   * 结构发生变化后必须重新初始化 A 通道，当前实现会同时清空水位与统计；
+   * 运行时动态闸门应改用不重置水位的专用 pass，这里只服务演示/调试。
+   */
+  setStructure(structure: SimStructure | null): void {
+    if (this.disposed) return
+    const heights = this.resolveStructureHeights(structure, this.resolution)
+    const texture = this.createStructureTexture(heights, this.resolution)
+    this.structureTexture.dispose()
+    this.structureTexture = texture
+    this.uniform(this.initMaterial, 'uStructure').value = texture
+    this.reset()
+    this.statsStale = true
+  }
+
+  /** 写入闸门几何；只在闸门启用时参与水深更新。 */
+  setGate(gate: SimGate | null): void {
+    if (this.disposed) return
+    const active = gate ? 1 : 0
+    this.uniform(this.fluxMaterial, 'uGateActive').value = active
+    this.uniform(this.depthMaterial, 'uGateActive').value = active
+    if (!gate) {
+      this.uniform(this.depthMaterial, 'uGateFlow').value = 0
+      return
+    }
+    const solidHalfWidth = gate.widthMeters / 2 + this.cellWidth
+    const solidHalfThickness = Math.max(gate.thicknessMeters / 2, this.cellWidth)
+    for (const material of [this.fluxMaterial, this.depthMaterial]) {
+      const center = this.uniform(material, 'uGateCenter').value as THREE.Vector2
+      const axis = this.uniform(material, 'uGateAxis').value as THREE.Vector2
+      const normal = this.uniform(material, 'uGateNormal').value as THREE.Vector2
+      center.set(gate.centerX, gate.centerZ)
+      axis.set(gate.axisX, gate.axisZ)
+      normal.set(-gate.axisZ, gate.axisX)
+      this.uniform(material, 'uGateSolidHalfWidth').value = solidHalfWidth
+      this.uniform(material, 'uGateSolidHalfThickness').value = solidHalfThickness
+    }
+    this.uniform(this.depthMaterial, 'uGateWidth').value = Math.max(0, gate.widthMeters)
+    this.uniform(this.depthMaterial, 'uGateThickness').value = Math.max(0, gate.thicknessMeters)
+    this.uniform(this.depthMaterial, 'uGateBand').value = Math.max(0, gate.bandMeters)
+  }
+
+  /** 设置闸门流量（m³/s）；0 表示关闭/贴地，无下泄。 */
+  setGateFlow(flowM3s: number): void {
+    if (this.disposed) return
+    const flow = toFiniteNumber(flowM3s)
+    this.uniform(this.depthMaterial, 'uGateFlow').value = flow === null ? 0 : Math.max(0, flow)
   }
 
   setSources(sources: SimSource[]): void {
@@ -384,6 +462,59 @@ export class ShallowWaterSim {
     }
   }
 
+  /**
+   * 读取某个域平面坐标（米）处的水深。
+   *
+   * 只用于调试/E2E：单像素回读会强制 GPU 同步，不要放进每帧循环。
+   */
+  debugDepthAt(x: number, z: number): number {
+    if (this.disposed) return 0
+    const n = this.resolution
+    const half = this.sizeMeters / 2
+    const i = Math.floor(clamp(((x + half) / this.sizeMeters) * n, 0, n - 1))
+    const j = Math.floor(clamp(((z + half) / this.sizeMeters) * n, 0, n - 1))
+    const target = this.stateTargets[this.stateIndex]
+    if (!target) return 0
+    const buffer = this.useFloatTextures ? new Float32Array(4) : new Uint16Array(4)
+    const previousTarget = this.renderer.getRenderTarget()
+    try {
+      this.renderer.readRenderTargetPixels(target, i, j, 1, 1, buffer)
+    } catch (error) {
+      console.warn('[ShallowWaterSim] 单点水深读回失败', error)
+      return 0
+    } finally {
+      this.renderer.setRenderTarget(previousTarget)
+    }
+    const value = this.useFloatTextures
+      ? (buffer as Float32Array)[0]
+      : THREE.DataUtils.fromHalfFloat((buffer as Uint16Array)[0] ?? 0)
+    return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : 0
+  }
+
+  /** 调试：临时放大闸门实体范围，用于确认固体墙 shader 是否生效。 */
+  debugSetGateSolid(width: number, thickness: number): void {
+    for (const material of [this.fluxMaterial, this.depthMaterial]) {
+      this.uniform(material, 'uGateSolidHalfWidth').value = Math.max(0, width)
+      this.uniform(material, 'uGateSolidHalfThickness').value = Math.max(0, thickness)
+    }
+  }
+
+  /** 调试：读取当前闸门 uniform，用于定位“实体墙不生效”这类问题。 */
+  debugGateUniforms(): Record<string, number | [number, number]> {
+    const read = (name: string): unknown => this.depthMaterial.uniforms[name]?.value
+    const center = read('uGateCenter') as THREE.Vector2 | undefined
+    return {
+      active: Number(read('uGateActive') ?? 0),
+      flow: Number(read('uGateFlow') ?? 0),
+      centerX: center?.x ?? 0,
+      centerZ: center?.y ?? 0,
+      solidHalfWidth: Number(read('uGateSolidHalfWidth') ?? 0),
+      solidHalfThickness: Number(read('uGateSolidHalfThickness') ?? 0),
+      width: Number(read('uGateWidth') ?? 0),
+      thickness: Number(read('uGateThickness') ?? 0)
+    }
+  }
+
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
@@ -393,12 +524,42 @@ export class ShallowWaterSim {
     this.fluxTarget.dispose()
     this.statsTarget.dispose()
     this.terrainTexture.dispose()
+    this.structureTexture.dispose()
     this.initMaterial.dispose()
     this.fluxMaterial.dispose()
     this.depthMaterial.dispose()
     this.statsMaterial.dispose()
     this.geometry.dispose()
     this.statsBuffer = null
+  }
+
+  /** 结构高度场必须与模拟网格同分辨率；缺省时用全 0 纹理（等价于没有水工结构）。 */
+  private resolveStructureHeights(
+    structure: SimStructure | null,
+    resolution: number
+  ): Float32Array {
+    const length = resolution * resolution
+    if (!structure) return new Float32Array(length)
+    if (structure.resolution !== resolution || structure.heights.length !== length) {
+      throw new Error('ShallowWaterSim: 结构高度场分辨率与模拟网格不一致')
+    }
+    return structure.heights
+  }
+
+  private createStructureTexture(heights: Float32Array, resolution: number): THREE.DataTexture {
+    const texture = new THREE.DataTexture(
+      heights,
+      resolution,
+      resolution,
+      THREE.RedFormat,
+      THREE.FloatType
+    )
+    texture.minFilter = THREE.NearestFilter
+    texture.magFilter = THREE.NearestFilter
+    texture.wrapS = THREE.ClampToEdgeWrapping
+    texture.wrapT = THREE.ClampToEdgeWrapping
+    texture.needsUpdate = true
+    return texture
   }
 
   private createVector4Array(): THREE.Vector4[] {

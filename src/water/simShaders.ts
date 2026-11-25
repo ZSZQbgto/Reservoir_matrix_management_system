@@ -25,15 +25,17 @@ void main() {
 }
 `
 
-/** 初始化 / 重置：把地形高程写进 A，水深与速度清零。 */
+/** 初始化 / 重置：把地形与结构高度写入 A，水深与速度清零。 */
 export const INIT_FRAGMENT = /* glsl */ `
 uniform sampler2D uTerrain;
+uniform sampler2D uStructure;
 
 varying vec2 vUv;
 
 void main() {
   float terrainRel = texture2D(uTerrain, vUv).r;
-  gl_FragColor = vec4(0.0, 0.0, 0.0, terrainRel);
+  float structureRel = texture2D(uStructure, vUv).r;
+  gl_FragColor = vec4(0.0, 0.0, 0.0, terrainRel + structureRel);
 }
 `
 
@@ -48,13 +50,27 @@ void main() {
 export const FLUX_FRAGMENT = /* glsl */ `
 uniform sampler2D uState;
 uniform float uResolution;
+uniform float uDomainSize;
 uniform float uCellWidth;
 uniform float uDt;
 uniform float uGravity;
 uniform float uMaxFlowSpeed;
 uniform float uDamping;
+uniform float uGateActive;
+uniform vec2 uGateCenter;
+uniform vec2 uGateAxis;
+uniform vec2 uGateNormal;
+uniform float uGateSolidHalfWidth;
+uniform float uGateSolidHalfThickness;
 
 varying vec2 vUv;
+
+bool gateSolidAt(vec2 position) {
+  if (uGateActive < 0.5) return false;
+  vec2 delta = position - uGateCenter;
+  return abs(dot(delta, uGateAxis)) <= uGateSolidHalfWidth &&
+    abs(dot(delta, uGateNormal)) <= uGateSolidHalfThickness;
+}
 
 float surfaceEta(vec4 state) {
   return state.a + max(state.r, 0.0);
@@ -64,6 +80,11 @@ void main() {
   int res = int(uResolution);
   ivec2 hi = ivec2(res - 1);
   ivec2 p = clamp(ivec2(floor(vUv * uResolution)), ivec2(0), hi);
+  vec2 position = (vUv - 0.5) * uDomainSize;
+  if (gateSolidAt(position)) {
+    gl_FragColor = vec4(0.0);
+    return;
+  }
   vec4 state = texelFetch(uState, p, 0);
   float depth = max(state.r, 0.0);
   float eta = surfaceEta(state);
@@ -82,6 +103,12 @@ void main() {
     float etaR = p.x < hi.x ? surfaceEta(texelFetch(uState, p + ivec2(1, 0), 0)) : etaOutside;
     float etaT = p.y < hi.y ? surfaceEta(texelFetch(uState, p + ivec2(0, 1), 0)) : etaOutside;
     float etaB = p.y > 0 ? surfaceEta(texelFetch(uState, p + ivec2(0, -1), 0)) : etaOutside;
+
+    // 闸门实体墙：墙格不存水，相邻水格也不能向墙内出流。
+    if (p.x > 0 && gateSolidAt(position + vec2(-uCellWidth, 0.0))) etaL = 1e6;
+    if (p.x < hi.x && gateSolidAt(position + vec2(uCellWidth, 0.0))) etaR = 1e6;
+    if (p.y < hi.y && gateSolidAt(position + vec2(0.0, uCellWidth))) etaT = 1e6;
+    if (p.y > 0 && gateSolidAt(position + vec2(0.0, -uCellWidth))) etaB = 1e6;
 
     // 显式扩散稳定性上限：depth * v * dt / cellWidth^2 <= 0.2，
     // 深水 + 大水位差时自动放慢，避免数值振荡。
@@ -145,8 +172,25 @@ uniform float uHasCap;
 uniform float uCapRel;
 uniform float uMaxDepth;
 uniform float uMaxFlowSpeed;
+uniform float uGateActive;
+uniform float uGateFlow;
+uniform vec2 uGateCenter;
+uniform vec2 uGateAxis;
+uniform vec2 uGateNormal;
+uniform float uGateWidth;
+uniform float uGateThickness;
+uniform float uGateBand;
+uniform float uGateSolidHalfWidth;
+uniform float uGateSolidHalfThickness;
 
 varying vec2 vUv;
+
+bool gateSolidAt(vec2 position) {
+  if (uGateActive < 0.5) return false;
+  vec2 delta = position - uGateCenter;
+  return abs(dot(delta, uGateAxis)) <= uGateSolidHalfWidth &&
+    abs(dot(delta, uGateNormal)) <= uGateSolidHalfThickness;
+}
 
 void main() {
   int res = int(uResolution);
@@ -157,6 +201,12 @@ void main() {
   vec4 flux = texelFetch(uFlux, p, 0);
   float depth = max(state.r, 0.0);
   float terrainRel = state.a;
+  vec2 position = (vUv - 0.5) * uDomainSize;
+  // 闸门实体格：不存水、不注水、不参与闸门转移。水面着色器因 depth=0 自动裁掉。
+  if (gateSolidAt(position)) {
+    gl_FragColor = vec4(0.0, 0.0, 0.0, terrainRel);
+    return;
+  }
   float cellArea = uCellWidth * uCellWidth;
   float sumOut = flux.r + flux.g + flux.b + flux.a;
 
@@ -175,7 +225,6 @@ void main() {
 
   // 注水：由 CPU 按模拟时间触发；半径内余弦衰减；有目标水位时只补到该水位。
   if (uInject > 0.5 && uSourceCount > 0) {
-    vec2 position = (vUv - 0.5) * uDomainSize;
     for (int i = 0; i < MAX_SOURCES; i++) {
       if (i >= uSourceCount) break;
       vec4 source = uSources[i];
@@ -202,6 +251,24 @@ void main() {
     newDepth = min(newDepth, max(0.0, uCapRel - terrainRel));
   }
   newDepth = min(newDepth, uMaxDepth);
+
+  // 闸门底部过流：实体闸墙本身不存水（上面已提前返回），这里在闸墙两侧
+  // 的条带内按 Q 做“移水”：上游减、下游加。Q=0 时闸门贴地，完全不出水。
+  if (uGateActive > 0.5 && uGateFlow > 0.0) {
+    vec2 gateDelta = position - uGateCenter;
+    float along = dot(gateDelta, uGateAxis);
+    float across = dot(gateDelta, uGateNormal);
+    if (abs(along) <= uGateWidth * 0.5) {
+      float wallHalf = uGateThickness * 0.5;
+      float bandArea = max(uGateWidth * uGateBand, 1.0);
+      float transfer = uGateFlow * uDt / bandArea;
+      if (across >= wallHalf && across <= wallHalf + uGateBand) {
+        newDepth = max(0.0, newDepth - transfer);
+      } else if (across <= -wallHalf && across >= -wallHalf - uGateBand) {
+        newDepth += transfer;
+      }
+    }
+  }
 
   vec2 velocity = vec2(0.0);
   if (newDepth > 1e-4) {

@@ -12,29 +12,36 @@ import {
 import { computeSunDirectionENU } from './sun'
 import { nextFrame } from './async'
 import { flyOverDomain, sampleGroundHeight } from './terrainSampling'
-import { queryWaterEditorDom, type WaterEditorDom } from './waterEditorDom'
 import { WaterPointerController } from './waterPointerController'
-import { WaterControlsBinder, type SourceChange } from './waterControlsBinder'
-import { WaterPanelView } from './waterPanelView'
 import { WaterDomainBuilder } from './waterDomainBuilder'
+import {
+  buildSimStructure,
+  computeGateDischarge,
+  createEmptyWaterModels,
+  gateSolidGeometry,
+  toSimGate,
+  type DamStructure,
+  type GateStructure,
+  type WaterModelSet
+} from './structures'
 import { clearCachedDomainField, clearServerDomainField, getCachedDomainInfo } from './domainCache'
 import {
+  GATE_MAX_OPENING_METERS,
   MAX_WATER_SOURCES,
   WATER_DOMAIN,
   cloneState,
   createSourceId,
   normalizeWaterState,
   type SimSource,
+  type SimStructure,
   type SurfaceDomain,
   type TerrainField,
   type WaterSource,
   type WaterState
 } from './types'
 import {
-  downloadStateJson,
   loadStoredMode,
   loadStoredState,
-  readStateFile,
   storeMode,
   storeState,
   type EditorMode
@@ -51,18 +58,16 @@ interface BuildTask {
 }
 
 /**
- * 水体编辑器总控：模式切换、模拟域构建、水源放置/拖动、面板与持久化。
- *
- * 模拟循环独立于模式：水体开启后浏览模式也推进；水源标记、放置交互与
- * 模拟域边界只在编辑模式启用。
- */
+ * 姘翠綋缂栬緫鍣ㄦ€绘帶锛氭ā寮忓垏鎹€佹ā鎷熷煙鏋勫缓銆佹按婧愭斁缃?鎷栧姩銆侀潰鏉夸笌鎸佷箙鍖栥€? *
+ * 妯℃嫙寰幆鐙珛浜庢ā寮忥細姘翠綋寮€鍚悗娴忚妯″紡涔熸帹杩涳紱姘存簮鏍囪銆佹斁缃氦浜掍笌
+ * 妯℃嫙鍩熻竟鐣屽彧鍦ㄧ紪杈戞ā寮忓惎鐢ㄣ€? */
 export class WaterEditor {
   private readonly viewer: Viewer
   private readonly options: WaterEditorOptions
   private readonly scene: THREE.Scene
   private readonly renderer: THREE.WebGLRenderer
   private readonly canvas: HTMLCanvasElement
-  /** 画布 CSS 尺寸缓存：每帧都要用，不能每帧读布局（getBoundingClientRect 会强制回流）。 */
+  /** 鐢诲竷 CSS 灏哄缂撳瓨锛氭瘡甯ч兘瑕佺敤锛屼笉鑳芥瘡甯ц甯冨眬锛坓etBoundingClientRect 浼氬己鍒跺洖娴侊級銆?*/
   private readonly canvasSize = { width: 0, height: 0 }
   private canvasObserver: ResizeObserver | null = null
 
@@ -71,16 +76,22 @@ export class WaterEditor {
   private field: TerrainField | null = null
   private projection: LocalProjection | null = null
   private domain: SurfaceDomain | null = null
-  /** 当前模拟域地形来源：本地存储恢复 / 现场采样。 */
+  /** 褰撳墠妯℃嫙鍩熷湴褰㈡潵婧愶細鏈湴瀛樺偍鎭㈠ / 鐜板満閲囨牱銆?*/
   private domainSource: 'cache' | 'sampled' | null = null
   private sim: ShallowWaterSim | null = null
   private surface: WaterSurface | null = null
+  /** 褰撳墠鍦烘櫙妯″瀷闆嗗悎锛涢粯璁ょ┖锛屼笉鑷姩鏀炬紨绀烘ā鍨嬨€?*/
+  private models: WaterModelSet = createEmptyWaterModels()
+  /** 褰撳墠妯℃嫙缁撴瀯/闂搁棬瀹氫箟锛涜瑙夋ā鍨嬬敱澶栭儴鏂囦欢鍔犺浇锛岀紪杈戝櫒鍙秷璐瑰绾︺€?*/
+  private dam: DamStructure | null = null
+  private structure: SimStructure | null = null
+  private gate: GateStructure | null = null
+  private lastGateFlowAt = 0
+  private lastGateFlow = 0
   private readonly markers: SourceMarkers
   private readonly boundary: DomainBoundary
-  /** 指针交互：拖动 / 选中 / 放置 / Esc，状态仍留在编辑器里。 */
+  /** 鎸囬拡浜や簰锛氭嫋鍔?/ 閫変腑 / 鏀剧疆 / Esc锛岀姸鎬佷粛鐣欏湪缂栬緫鍣ㄩ噷銆?*/
   private readonly pointer: WaterPointerController
-  /** 表单/按钮绑定：事件 → 命令。 */
-  private readonly binder: WaterControlsBinder
 
   private selectedId: string | null = null
   private placing = false
@@ -97,12 +108,9 @@ export class WaterEditor {
   private saveTimer = 0
   private restoreTimer = 0
   private statsSnapshot = { steps: 0, wetCells: 0, maxDepth: 0, simMs: 0 }
+  private buildProgress = { percent: 0, label: '' }
 
-  /** 全部 DOM 引用（含外观滑杆表），见 waterEditorDom.ts。 */
-  private readonly dom: WaterEditorDom
-  /** 面板视图：只做状态 → DOM 的同步。 */
-  private readonly panel: WaterPanelView
-  /** 建域器：缓存恢复 / 现场采样，进度通过 hooks 回调。 */
+  /** 寤哄煙鍣細缂撳瓨鎭㈠ / 鐜板満閲囨牱锛岃繘搴﹂€氳繃 hooks 鍥炶皟銆?*/
   private readonly domainBuilder: WaterDomainBuilder
 
   constructor(viewer: Viewer, options: WaterEditorOptions) {
@@ -111,28 +119,16 @@ export class WaterEditor {
     this.scene = viewer.scene.raw
     this.renderer = viewer.renderer.raw as THREE.WebGLRenderer
     this.canvas = this.renderer.domElement
-    this.dom = queryWaterEditorDom()
+    this.state = loadStoredState()
     this.domainBuilder = new WaterDomainBuilder(this.viewer, {
       onProgress: (percent, label) => {
-        this.dom.progressBar.style.width = `${Math.round(percent)}%`
-        this.dom.progressLabel.textContent = label
+        this.buildProgress = { percent, label }
       },
       onToast: (message, duration) => this.options.toast(message, duration)
     })
-    this.panel = new WaterPanelView(this.dom, {
-      getState: () => this.state,
-      getSelectedId: () => this.selectedId,
-      getSelectedSource: () => this.selectedSource(),
-      getField: () => this.field,
-      isBuilding: () => Boolean(this.build),
-      isPlacing: () => this.placing,
-      isDomainReady: () => this.isDomainReady,
-      getStats: () => this.statsSnapshot
-    })
-    this.state = loadStoredState()
     this.markers = new SourceMarkers(viewer, {
       scene: this.scene,
-      labelContainer: this.dom.waterLabels
+      labelContainer: document.createElement('div')
     })
     this.boundary = new DomainBoundary(viewer, this.scene)
     this.pointer = new WaterPointerController({
@@ -154,47 +150,12 @@ export class WaterEditor {
       exitPlacing: () => this.exitPlacing(),
       toast: (message, duration) => this.options.toast(message, duration)
     })
-    this.binder = new WaterControlsBinder({
-      dom: this.dom,
-      panel: this.panel,
-      getState: () => this.state,
-      getSelectedSource: () => this.selectedSource(),
-      applySimState: () => this.applySimState(),
-      applyVisual: () => this.applyVisual(),
-      resetSimulation: () => this.resetSimulation(),
-      rebuildSimulation: () => this.rebuildSimulation(),
-      refreshSelectedSource: (change) => this.refreshSelectedSource(change),
-      selectSource: (id) => this.selectSource(id),
-      deleteSelectedSource: () => {
-        if (this.selectedId) this.deleteSource(this.selectedId)
-      },
-      togglePlacing: () => this.togglePlacing(),
-      clearSources: () => this.clearSources(),
-      rebuildDomain: () => {
-        void this.rebuildFixedDomain()
-      },
-      markModeTouched: () => {
-        this.modeTouched = true
-      },
-      enterMode: (mode) => {
-        void this.enterMode(mode)
-      },
-      saveNow: (manual) => this.saveNow(manual),
-      exportProject: () => this.exportProject(),
-      importProject: (file) => {
-        void this.applyImportedFile(file)
-      },
-      scheduleSave: () => this.scheduleSave(),
-      toast: (message, duration) => this.options.toast(message, duration)
-    })
 
     this.syncCanvasSize()
     this.canvasObserver = new ResizeObserver(() => this.syncCanvasSize())
     this.canvasObserver.observe(this.canvas)
 
-    this.binder.attach()
     this.pointer.attach()
-    this.syncAll()
     this.applySimState()
 
     this.animationHandle = requestAnimationFrame(this.animate)
@@ -217,8 +178,49 @@ export class WaterEditor {
     return cloneState(this.state)
   }
 
+  /** 褰撳墠鍦烘櫙妯″瀷闆嗗悎鐨勫彧璇诲揩鐓с€?*/
+  get currentModels(): WaterModelSet {
+    return this.copyModels(this.models)
+  }
+
   get isDomainReady(): boolean {
     return Boolean(this.sim && this.surface && this.domain)
+  }
+
+  /**
+   * 璁剧疆鍦烘櫙妯″瀷闆嗗悎銆?   *
+   * 妯″瀷鍙樺寲浼氶噸寤烘ā鎷熷煙锛堥噴鏀炬棫妯″瀷/缁撴瀯骞堕噸寤猴級锛屽洜姝や細閲嶇疆姘翠綅锛?   * 鍩熷皻鏈缓绔嬫椂鍙褰曢厤缃紝绛?`createSimulation` 鏃跺啀搴旂敤銆?   */
+  setWaterModels(models: WaterModelSet): boolean {
+    if (!models) return false
+    this.models = this.copyModels(models)
+    if (this.isDomainReady) {
+      this.rebuildSimulation('模型已更新，水位已重置')
+    } else {
+      this.syncAll()
+    }
+    return true
+  }
+
+  /** 娓呯┖鍦烘櫙妯″瀷锛涙ā鎷熺户缁繍琛岋紝浣嗕笉鍐嶆湁鍧?闂搁棬/閫忔按妯″瀷銆?*/
+  clearWaterModels(): boolean {
+    const applied = this.setWaterModels(createEmptyWaterModels())
+    if (applied) this.options.toast('模型已清空', 2200)
+    return applied
+  }
+
+  /** 璁剧疆闂搁棬寮€搴︼紙绫筹級锛? = 璐村湴鍏抽棴锛?0 = 搴曢儴杩囨祦銆?*/
+  setGateOpening(meters: number): number {
+    this.applyGateOpening(meters)
+    return this.state.gateOpeningMeters
+  }
+
+  /** UI 鐢ㄧ殑妯″瀷绫诲瀷鎽樿銆?*/
+  getModelKinds(): string[] {
+    const kinds: string[] = []
+    if (this.models.terrain) kinds.push('贴地')
+    if (this.models.gate) kinds.push('闸门')
+    if (this.models.permeable) kinds.push('透水')
+    return kinds
   }
 
   async enterMode(mode: EditorMode): Promise<void> {
@@ -227,16 +229,11 @@ export class WaterEditor {
       return
     }
     this.mode = mode
-    this.dom.consoleElement.hidden = mode === 'water'
-    this.dom.waterLeft.hidden = mode !== 'water'
-    this.dom.waterRight.hidden = mode !== 'water'
     this.markers.setVisible(mode === 'water')
     this.boundary.setVisible(mode === 'water')
     if (mode !== 'water') this.exitPlacing()
     storeMode(mode)
     this.syncModeUI()
-    this.panel.syncStatus()
-    this.panel.syncPill()
     if (mode === 'water') await this.ensureDomain()
   }
 
@@ -258,15 +255,14 @@ export class WaterEditor {
     this.canvas.style.cursor = ''
   }
 
-  /** 缓存画布 CSS 尺寸：首次挂载与 ResizeObserver 回调共用。 */
+  /** 缂撳瓨鐢诲竷 CSS 灏哄锛氶娆℃寕杞戒笌 ResizeObserver 鍥炶皟鍏辩敤銆?*/
   private syncCanvasSize(): void {
     const rect = this.canvas.getBoundingClientRect()
     this.canvasSize.width = rect.width
     this.canvasSize.height = rect.height
   }
 
-  // ---------------------------------------------------------------- 模拟域
-
+  // ---------------------------------------------------------------- 妯℃嫙鍩?
   private async ensureDomain(): Promise<boolean> {
     if (this.isDomainReady) return true
     if (this.build) return this.build.promise
@@ -274,18 +270,14 @@ export class WaterEditor {
     const center = { longitude: WATER_DOMAIN.longitude, latitude: WATER_DOMAIN.latitude }
     this.filterSourcesToDomain(center, WATER_DOMAIN.sizeMeters)
 
-    // 固定模拟域的地形高度场已在缓存里：直接恢复，跳过飞行等待与 97² 采样。
     const cached = await this.domainBuilder.loadCached()
     if (cached) {
       this.applyDomainField(cached.field, 'cache', cached.projection)
-      this.dom.progress.hidden = true
-      this.panel.syncBusy()
-      const originLabel = cached.origin === 'browser-cache' ? '本地存储' : '服务器本地存储'
+      const originLabel = cached.origin === 'browser-cache' ? '本地缓存' : '服务器缓存'
       this.options.toast(
         `模拟域已从${originLabel}恢复 · 8 km × 8 km · 地形 ${cached.field.resolution}²`,
         2800
       )
-      // 相机仍飞到固定域正上方，地形瓦片由缓存提供。
       void flyOverDomain(this.viewer, center, WATER_DOMAIN.sizeMeters)
       return true
     }
@@ -293,7 +285,7 @@ export class WaterEditor {
     return this.buildDomain(center, WATER_DOMAIN.sizeMeters)
   }
 
-  /** 把水源限制在模拟域内（固定区域或重建后的区域），返回移除数量。 */
+  /** 鎶婃按婧愰檺鍒跺湪妯℃嫙鍩熷唴锛堝浐瀹氬尯鍩熸垨閲嶅缓鍚庣殑鍖哄煙锛夛紝杩斿洖绉婚櫎鏁伴噺銆?*/
   private filterSourcesToDomain(
     center: { longitude: number; latitude: number },
     sizeMeters: number
@@ -309,19 +301,18 @@ export class WaterEditor {
       if (this.selectedId && !this.state.sources.some((entry) => entry.id === this.selectedId)) {
         this.selectedId = null
       }
-      this.options.toast(`已移除 ${removed} 个固定模拟区外的水源`, 3200)
+      this.options.toast(`已移除 ${removed} 个水源`, 3200)
     }
     return removed
   }
 
-  /** 用一份地形高度场建立 / 替换模拟域与水面（缓存恢复或现场采样共用）。 */
+  /** 鐢ㄤ竴浠藉湴褰㈤珮搴﹀満寤虹珛 / 鏇挎崲妯℃嫙鍩熶笌姘撮潰锛堢紦瀛樻仮澶嶆垨鐜板満閲囨牱鍏辩敤锛夈€?*/
   private applyDomainField(
     field: TerrainField,
     source: 'cache' | 'sampled',
     projection: LocalProjection
   ): void {
     const center = { longitude: WATER_DOMAIN.longitude, latitude: WATER_DOMAIN.latitude }
-    // 投影必须和 field 配套：toSimSources、水源拖动、圆环贴地、域边界都依赖它。
     this.projection = projection
     this.field = field
     this.domain = {
@@ -343,7 +334,6 @@ export class WaterEditor {
   ): Promise<boolean> {
     if (this.build) this.build.cancel.cancelled = true
     const token = ++this.buildToken
-    // 模拟域外的水源在重建时移除（兼容旧工程数据）。
     this.filterSourcesToDomain(center, sizeMeters)
     this.state.domain = { longitude: center.longitude, latitude: center.latitude, sizeMeters }
     const cancel = { cancelled: false }
@@ -357,11 +347,6 @@ export class WaterEditor {
     this.projection = createLocalProjection(center, sizeMeters)
     this.domain = null
     this.field = null
-    this.dom.progress.hidden = false
-    this.panel.syncBusy()
-    this.panel.syncPill()
-    this.panel.syncDomainMeta()
-    this.panel.syncStatus()
 
     let settled = false
     const finish = (ready: boolean) => {
@@ -382,20 +367,17 @@ export class WaterEditor {
       }
       this.applyDomainField(result.field, 'sampled', result.projection)
       await nextFrame()
-      this.dom.progress.hidden = true
       this.options.toast(
-        `模拟域已就绪 · 8 km × 8 km · 地形 ${result.field.resolution}² · 模拟 ${this.state.sim.resolution}²`,
+        `模拟域已从 ${result.field.resolution}² 重采样到 ${this.state.sim.resolution}²`,
         3400
       )
       this.flushBuildWaiters(true)
       finish(true)
       return true
     } catch (error) {
-      console.error('[water-editor] 构建模拟域失败', error)
+      console.error('[water-editor] build failed', error)
       if (token === this.buildToken) {
-        this.options.toast('构建模拟域时出错，请重试', 3600)
-        this.panel.syncStatus()
-        this.panel.syncPill()
+        this.options.toast('构建模拟域失败，请重试', 3600)
       }
       this.flushBuildWaiters(false)
       finish(false)
@@ -403,10 +385,6 @@ export class WaterEditor {
     } finally {
       if (token === this.buildToken) {
         this.build = null
-        this.dom.progress.hidden = true
-        this.panel.syncBusy()
-        this.panel.syncStatus()
-        this.panel.syncPill()
       }
     }
   }
@@ -418,7 +396,7 @@ export class WaterEditor {
     }
   }
 
-  /** 用模拟地形高度场取地面高程（与浅水模拟使用同一份地形，保证目标水位一致）。 */
+  /** 鐢ㄦā鎷熷湴褰㈤珮搴﹀満鍙栧湴闈㈤珮绋嬶紙涓庢祬姘存ā鎷熶娇鐢ㄥ悓涓€浠藉湴褰紝淇濊瘉鐩爣姘翠綅涓€鑷达級銆?*/
   private groundFromField(longitude: number, latitude: number): number | undefined {
     if (!this.field || !this.projection) return undefined
     const local = this.projection.toLocal(longitude, latitude)
@@ -430,9 +408,7 @@ export class WaterEditor {
   }
 
   /**
-   * 取某点的地面高程：显式采样值（如点选命中高度）优先，
-   * 其次用模拟地形场（与浅水模拟一致），最后回退到 viewer 实时采样。
-   */
+   * 鍙栨煇鐐圭殑鍦伴潰楂樼▼锛氭樉寮忛噰鏍峰€硷紙濡傜偣閫夊懡涓珮搴︼級浼樺厛锛?   * 鍏舵鐢ㄦā鎷熷湴褰㈠満锛堜笌娴呮按妯℃嫙涓€鑷达級锛屾渶鍚庡洖閫€鍒?viewer 瀹炴椂閲囨牱銆?   */
   private groundLevelAt(
     longitude: number,
     latitude: number,
@@ -444,7 +420,7 @@ export class WaterEditor {
     return this.sampleGround(longitude, latitude) ?? null
   }
 
-  /** 用当前地形场与投影建立模拟与水面；三者缺一不可（域重建期间会短暂缺失）。 */
+  /** 鐢ㄥ綋鍓嶅湴褰㈠満涓庢姇褰卞缓绔嬫ā鎷熶笌姘撮潰锛涗笁鑰呯己涓€涓嶅彲锛堝煙閲嶅缓鏈熼棿浼氱煭鏆傜己澶憋級銆?*/
   private createSimulation(): void {
     const domain = this.domain
     const field = this.field
@@ -456,12 +432,25 @@ export class WaterEditor {
       if (typeof ground === 'number') source.groundLevel = ground
     }
     const simTerrain = resampleTerrain(field, this.state.sim.resolution)
-    this.sim = new ShallowWaterSim(this.renderer, simTerrain)
+    const dam = this.models.terrain
+    const gate = this.models.gate
+    if (gate) gate.openingMeters = this.clampGateOpening(this.state.gateOpeningMeters)
+    const structure = dam ? buildSimStructure(dam, field, this.state.sim.resolution, gate) : null
+    this.dam = dam
+    this.gate = gate
+    this.structure = structure
+    this.sim = new ShallowWaterSim(this.renderer, simTerrain, structure)
+    this.sim.setGate(gate ? toSimGate(gate) : null)
+    this.sim.setGateFlow(0)
     this.surface = new WaterSurface(
       this.viewer,
       domain,
       this.sim.stateTexture,
       this.state.sim.resolution
+    )
+    this.surface.setGate(
+      gate ? toSimGate(gate) : null,
+      domain.sizeMeters / this.state.sim.resolution
     )
     this.applySimState()
     this.updateSun(true)
@@ -469,11 +458,26 @@ export class WaterEditor {
     this.markers.setSources(this.state.sources, this.selectedId, projection)
   }
 
-  private rebuildSimulation(): void {
+  private clampGateOpening(value: number): number {
+    if (!Number.isFinite(value)) return 0
+    return Math.max(0, Math.min(GATE_MAX_OPENING_METERS, value))
+  }
+
+  /** 娣辨嫹璐濇ā鍨嬪畾涔夛紝閬垮厤澶栭儴瀵硅薄涓庤繍琛屾椂鍏变韩鍙彉瀛楁锛堝 gate.opening锛夈€?*/
+  private copyModels(models: WaterModelSet): WaterModelSet {
+    return {
+      terrain: models.terrain ? { ...models.terrain } : null,
+      gate: models.gate ? { ...models.gate } : null,
+      permeable: models.permeable ? { ...models.permeable } : null
+    }
+  }
+
+  private rebuildSimulation(message = '模型已更新，水位已重置'): void {
     if (!this.domain || !this.field) return
     this.disposeSimulation()
     this.createSimulation()
-    this.options.toast('模拟精度已切换，水位已重置', 2600)
+    this.syncAll()
+    this.options.toast(message, 2600)
   }
 
   private disposeSimulation(): void {
@@ -481,6 +485,11 @@ export class WaterEditor {
     this.surface = null
     this.sim?.dispose()
     this.sim = null
+    this.dam = null
+    this.structure = null
+    this.gate = null
+    this.lastGateFlow = 0
+    this.lastGateFlowAt = 0
   }
 
   private toSimSources(): SimSource[] {
@@ -514,6 +523,25 @@ export class WaterEditor {
     this.surface?.setEnabled(this.state.enabled)
   }
 
+  private setEnabled(enabled: boolean): void {
+    this.state.enabled = enabled
+    this.applySimState()
+    this.scheduleSave()
+  }
+
+  /** 鏇存柊闂搁棬寮€搴︼細鐘舵€?鈫?妯″瀷鍙朵綅 鈫?涓嬩竴娆℃祦閲忚绠椼€?*/
+  private applyGateOpening(value: number): void {
+    const opening = this.clampGateOpening(value)
+    this.state.gateOpeningMeters = opening
+    if (this.gate) this.gate.openingMeters = opening
+    this.lastGateFlowAt = 0
+    if (opening <= 0) {
+      this.sim?.setGateFlow(0)
+      this.lastGateFlow = 0
+    }
+    this.scheduleSave()
+  }
+
   private updateSun(force = false): void {
     if (!this.surface || !this.domain) return
     const now = performance.now()
@@ -528,7 +556,35 @@ export class WaterEditor {
     this.surface.setSunDirection(direction)
   }
 
-  /** 重新采样当前模拟域。 */
+  /**
+   * 闂搁棬娴侀噺锛氱敤涓婃父鎺㈤拡姘存繁绠楁按澶达紝Q 鍐欏叆妯℃嫙 uniform銆?   *
+   * 250 ms 鑺傛祦锛涘崟鐐?GPU 鍥炶鍙湪杩欎釜浣庨璺緞閲岋紝涓嶈繘鍏ユ瘡甯у惊鐜€?   */
+  private updateGateFlow(now: number): void {
+    if (!this.sim || !this.gate || !this.field) return
+    if (now - this.lastGateFlowAt < 250) return
+    this.lastGateFlowAt = now
+    const gate = this.gate
+    gate.openingMeters = this.clampGateOpening(this.state.gateOpeningMeters)
+    if (!this.state.enabled || gate.openingMeters <= 0) {
+      this.sim.setGateFlow(0)
+      this.lastGateFlow = 0
+      return
+    }
+    const headingRad = (gate.headingDegrees * Math.PI) / 180
+    const normalX = -Math.sin(headingRad)
+    const normalZ = Math.cos(headingRad)
+    const probeDistance = gate.thicknessMeters / 2 + gate.bandMeters + 100
+    const probeX = gate.centerX + normalX * probeDistance
+    const probeZ = gate.centerZ + normalZ * probeDistance
+    const depth = this.sim.debugDepthAt(probeX, probeZ)
+    const terrainRel = sampleFieldHeight(this.field, probeX, probeZ)
+    const upstreamSurface = this.field.baseElevation + terrainRel + depth
+    const flow = computeGateDischarge(gate, upstreamSurface)
+    this.sim.setGateFlow(flow)
+    this.lastGateFlow = flow
+  }
+
+  /** 閲嶆柊閲囨牱褰撳墠妯℃嫙鍩熴€?*/
   private async rebuildFixedDomain(): Promise<void> {
     this.selectedId = null
     this.markers.setSources([], null, null)
@@ -538,32 +594,19 @@ export class WaterEditor {
     )
   }
 
-  // ---------------------------------------------------------------- 状态与 UI
+  // ---------------------------------------------------------------- 鐘舵€佷笌 UI
 
   private syncAll(): void {
-    this.dom.waterToggle.checked = this.state.enabled
     this.syncModeUI()
-    this.panel.syncAll()
   }
 
   private syncModeUI(): void {
-    this.dom.body.dataset.mode = this.mode
-    this.dom.modeScene.classList.toggle('is-active', this.mode === 'scene')
-    this.dom.modeWater.classList.toggle('is-active', this.mode === 'water')
-    this.dom.modeScene.setAttribute('aria-pressed', String(this.mode === 'scene'))
-    this.dom.modeWater.setAttribute('aria-pressed', String(this.mode === 'water'))
-    this.dom.consoleElement.hidden = this.mode === 'water'
-    this.dom.waterLeft.hidden = this.mode !== 'water'
-    this.dom.waterRight.hidden = this.mode !== 'water'
     this.markers.setVisible(this.mode === 'water')
     this.boundary.setVisible(this.mode === 'water')
-    this.dom.body.dataset.placing = this.placing ? 'true' : 'false'
-    this.dom.addButton.textContent = this.placing ? '取消放置' : '＋ 水源'
-    this.dom.addButton.classList.toggle('is-active', this.placing)
     this.canvas.style.cursor = this.placing ? 'crosshair' : ''
   }
 
-  // ---------------------------------------------------------------- 交互
+  // ---------------------------------------------------------------- 浜や簰
 
   private togglePlacing(): void {
     if (this.placing) {
@@ -577,7 +620,6 @@ export class WaterEditor {
     }
     this.placing = true
     this.syncModeUI()
-    this.panel.syncPill()
     this.options.toast('单击地形放置水源', 2400)
   }
 
@@ -585,10 +627,9 @@ export class WaterEditor {
     if (!this.placing) return
     this.placing = false
     this.syncModeUI()
-    this.panel.syncPill()
   }
 
-  /** 按「水源 N」的占位顺序取下一个未占用的编号。 */
+  /** 鎸夈€屾按婧?N銆嶇殑鍗犱綅椤哄簭鍙栦笅涓€涓湭鍗犵敤鐨勭紪鍙枫€?*/
   private nextSourceName(): string {
     const used = new Set(
       this.state.sources
@@ -611,7 +652,7 @@ export class WaterEditor {
     if (projection) {
       const local = projection.toLocal(longitude, latitude)
       if (!projection.contains(local.x, local.z)) {
-        this.options.toast('水源必须落在模拟域范围内', 2800)
+        this.options.toast('水源已移到新位置', 2800)
         return
       }
     }
@@ -631,97 +672,37 @@ export class WaterEditor {
     this.selectedId = source.id
     this.markers.setSources(this.state.sources, this.selectedId, this.projection)
     this.applySimState()
-    this.panel.syncSourceList()
-    this.panel.syncSourceEditor()
-    this.panel.syncStatus()
-    this.panel.syncPill()
     this.scheduleSave()
-    this.revealSourceEditor()
-    this.options.toast(`已放置「${source.name}」`, 2000)
-    if (this.state.sources.length >= MAX_WATER_SOURCES) this.exitPlacing()
+    this.options.toast(`已选中 ${source.name}`, 2000)
+    this.exitPlacing()
   }
 
   private selectSource(id: string | null): void {
-    const changed = this.selectedId !== id
     this.selectedId = id
     this.markers.setSelected(id)
-    this.panel.syncSourceList()
-    this.panel.syncSourceEditor()
-    if (changed && id) this.revealSourceEditor()
   }
 
-  /** 选中水源后把编辑分组带到可视区（桌面已可见时不产生滚动）。 */
-  private revealSourceEditor(): void {
-    if (this.dom.sourceEditor.hidden) return
-    this.dom.sourceEditor.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
-  }
-
-  private applyVisual(): void {
-    this.surface?.setVisual(this.state.visual)
-  }
-
-  /** 重置按钮：清空水位与统计。 */
+  /** 閲嶇疆鎸夐挳锛氭竻绌烘按浣嶄笌缁熻銆?*/
   private resetSimulation(): void {
     if (this.sim) {
       this.sim.reset()
       this.surface?.setStateTexture(this.sim.stateTexture)
     }
     this.statsSnapshot = { steps: 0, wetCells: 0, maxDepth: 0, simMs: 0 }
-    this.panel.syncStatus()
-    this.options.toast('模拟已重置，水位归零', 2400)
+    this.options.toast('模拟已重置', 2400)
   }
 
-  /** 导出按钮：下载 JSON 并提示。 */
-  private exportProject(): void {
-    downloadStateJson(this.state)
-    this.panel.setProjectStatus('已导出')
-    this.options.toast('已导出水体工程 JSON', 2400)
-  }
-
-  /** 选中水源被编辑后，按改动部位刷新对应视图。 */
-  private refreshSelectedSource(change: SourceChange): void {
-    const source = this.selectedSource()
-    if (!source) return
-    this.panel.syncSourceList()
-    switch (change) {
-      case 'name':
-        this.markers.setSources(this.state.sources, this.selectedId, this.projection)
-        break
-      case 'radius':
-        this.markers.settleSource(source)
-        this.applySimState()
-        break
-      case 'target':
-        this.panel.syncSourceEditor()
-        this.applySimState()
-        break
-      case 'enabled':
-        this.applySimState()
-        break
-    }
-    this.scheduleSave()
-  }
-
-  /** 拖动中：只更新标记与面板读数，不做地形重采样。 */
+  /** 鎷栧姩涓細鍙洿鏂版爣璁颁笌闈㈡澘璇绘暟锛屼笉鍋氬湴褰㈤噸閲囨牱銆?*/
   private previewDraggedSource(source: WaterSource): void {
     this.markers.updateSource(source)
-    this.panel.syncSourceEditor()
-    this.panel.syncSourceList()
     this.applySimState()
   }
 
-  /** 拖动结束：按落点重新贴地，刷新面板并保存。 */
+  /** 鎷栧姩缁撴潫锛氭寜钀界偣閲嶆柊璐村湴锛屽埛鏂伴潰鏉垮苟淇濆瓨銆?*/
   private commitDraggedSource(source: WaterSource): void {
     source.groundLevel = this.groundLevelAt(source.longitude, source.latitude) ?? source.groundLevel
     this.markers.settleSource(source)
-    this.panel.syncSourceEditor()
-    this.panel.syncSourceList()
     this.scheduleSave()
-  }
-
-  private selectedSource(): WaterSource | null {
-    if (!this.selectedId) return null
-    return this.state.sources.find((source) => source.id === this.selectedId) ?? null
   }
 
   private deleteSource(id: string): void {
@@ -732,12 +713,8 @@ export class WaterEditor {
     if (this.selectedId === id) this.selectedId = null
     this.markers.setSources(this.state.sources, this.selectedId, this.projection)
     this.applySimState()
-    this.panel.syncSourceList()
-    this.panel.syncSourceEditor()
-    this.panel.syncStatus()
-    this.panel.syncPill()
     this.scheduleSave()
-    this.options.toast(`已删除「${removed.name}」`, 2000)
+    this.options.toast(`已删除 ${removed.name}`, 2000)
   }
 
   private clearSources(): void {
@@ -748,40 +725,11 @@ export class WaterEditor {
     this.exitPlacing()
     this.markers.setSources([], null, this.projection)
     this.applySimState()
-    this.panel.syncSourceList()
-    this.panel.syncSourceEditor()
-    this.panel.syncStatus()
-    this.panel.syncPill()
     this.scheduleSave()
     this.options.toast(`已清空 ${count} 个水源`, 2200)
   }
 
-  private async applyImportedFile(file: File): Promise<void> {
-    const imported = await readStateFile(file)
-    if (!imported) {
-      this.options.toast('无法解析该 JSON，请检查工程文件', 3200)
-      return
-    }
-    this.state = normalizeWaterState(imported)
-    this.selectedId = null
-    this.exitPlacing()
-    this.disposeSimulation()
-    this.markers.setSources([], null, null)
-    this.boundary.setVisible(false)
-    this.field = null
-    this.domain = null
-    this.projection = null
-    this.syncAll()
-    if (this.state.domain) {
-      if (this.mode !== 'water') await this.enterMode('water')
-      else await this.ensureDomain()
-    }
-    this.saveNow(false)
-    this.panel.setProjectStatus('已导入')
-    this.options.toast('已导入水体工程', 3000)
-  }
-
-  // ---------------------------------------------------------------- 循环与持久化
+  // ---------------------------------------------------------------- 寰幆涓庢寔涔呭寲
 
   private animate = (now: number): void => {
     if (this.disposed) return
@@ -793,11 +741,11 @@ export class WaterEditor {
       const started = performance.now()
       this.sim.update(dt)
       this.statsSnapshot.simMs = performance.now() - started
-      // 模拟状态在两张纹理间 ping-pong：直接切换水面采样纹理，省掉一次全屏拷贝。
       this.surface?.setStateTexture(this.sim.stateTexture)
       this.surface?.update(dt)
     }
     this.updateSun()
+    this.updateGateFlow(now)
 
     this.markers.updateFrame(this.viewer.camera.raw, this.canvasSize.width, this.canvasSize.height)
     this.boundary.update(this.viewer.camera.raw, this.canvasSize.height)
@@ -805,30 +753,25 @@ export class WaterEditor {
     if (now - this.lastStatsAt > STATS_MIN_INTERVAL_MS && this.sim) {
       this.lastStatsAt = now
       this.statsSnapshot = { ...this.statsSnapshot, ...this.sim.debugStats() }
-      this.panel.syncStatus()
-      this.panel.syncPill()
     }
   }
 
   private handleBeforeUnload = (): void => {
-    this.saveNow(false)
+    this.saveNow()
   }
 
   private scheduleSave(): void {
     window.clearTimeout(this.saveTimer)
-    this.saveTimer = window.setTimeout(() => this.saveNow(false), 500)
+    this.saveTimer = window.setTimeout(() => this.saveNow(), 500)
   }
 
-  private saveNow(manual: boolean): void {
+  /** 仅自动持久化，不再提供手动保存/导出入口。 */
+  private saveNow(): void {
     window.clearTimeout(this.saveTimer)
-    const ok = storeState(this.state)
-    this.panel.setProjectStatus(ok ? '已保存' : '保存失败')
-    if (manual) {
-      this.options.toast(ok ? '水体工程已保存' : '保存失败：本地存储不可用', 2200)
-    }
+    storeState(this.state)
   }
 
-  // ---------------------------------------------------------------- 调试 API
+  // ---------------------------------------------------------------- 璋冭瘯 API
 
   private debugApi() {
     return {
@@ -855,22 +798,91 @@ export class WaterEditor {
           : null,
       isReady: () => this.isDomainReady,
       getDomainSource: () => this.domainSource,
+      getDam: () => (this.dam ? { ...this.dam } : null),
+      getModels: () => this.currentModels,
+      getModelKinds: () => this.getModelKinds(),
+      clearModels: () => this.clearWaterModels(),
+      getStructureInfo: () => {
+        if (!this.structure) return null
+        let maxHeight = 0
+        let nonZero = 0
+        for (const height of this.structure.heights) {
+          if (height > maxHeight) maxHeight = height
+          if (height > 0) nonZero += 1
+        }
+        return {
+          resolution: this.structure.resolution,
+          sizeMeters: this.structure.sizeMeters,
+          baseElevation: this.structure.baseElevation,
+          maxHeight,
+          nonZero
+        }
+      },
+      getGate: () => (this.gate ? { ...this.gate, flow: this.lastGateFlow } : null),
+      getGateUniforms: () => this.sim?.debugGateUniforms() ?? null,
+      debugSetGateSolid: (width: number, thickness: number) => {
+        this.sim?.debugSetGateSolid(width, thickness)
+      },
+      /** 璋冭瘯鐢細鏌愪釜鍩熷钩闈㈠潗鏍囨槸鍚﹁惤鍦ㄩ椄闂ㄥ疄浣撳鍐呫€?*/
+      isSolidAt: (x: number, z: number) => {
+        if (!this.gate || !this.structure) return false
+        const n = this.structure.resolution
+        const cellWidth = this.structure.sizeMeters / n
+        const { halfWidth, halfThickness } = gateSolidGeometry(this.gate, cellWidth)
+        const headingRad = (this.gate.headingDegrees * Math.PI) / 180
+        const axisX = Math.cos(headingRad)
+        const axisZ = Math.sin(headingRad)
+        const dx = x - this.gate.centerX
+        const dz = z - this.gate.centerZ
+        const along = Math.abs(dx * axisX + dz * axisZ)
+        const across = Math.abs(dx * -axisZ + dz * axisX)
+        return along <= halfWidth && across <= halfThickness
+      },
+      /** 闂搁棬寮€搴︼紙绫筹級锛? = 鍏抽棴璐村湴銆?*/
+      setGateOpening: (value: number) => {
+        this.applyGateOpening(value)
+        return this.state.gateOpeningMeters
+      },
+      getStructureHeightAt: (x: number, z: number) => {
+        if (!this.structure) return null
+        const n = this.structure.resolution
+        const half = this.structure.sizeMeters / 2
+        const i = Math.floor(
+          Math.max(0, Math.min(n - 1, ((x + half) / this.structure.sizeMeters) * n))
+        )
+        const j = Math.floor(
+          Math.max(0, Math.min(n - 1, ((z + half) / this.structure.sizeMeters) * n))
+        )
+        return this.structure.heights[j * n + i] ?? 0
+      },
+      /** 璋冭瘯鐢細涓存椂绉婚櫎/鎭㈠鍧濅綋缁撴瀯锛岄獙璇佲€滄湁姘村伐缁撴瀯鈥濅笌鈥滄棤缁撴瀯鈥濈殑瀵圭収銆?*/
+      setDamEnabled: (enabled: boolean) => {
+        if (!this.sim) return false
+        this.sim.setStructure(enabled ? this.structure : null)
+        this.sim.setGate(enabled && this.gate ? toSimGate(this.gate) : null)
+        this.surface?.setGate(
+          enabled && this.gate ? toSimGate(this.gate) : null,
+          this.domain ? this.domain.sizeMeters / this.state.sim.resolution : 1
+        )
+        this.statsSnapshot = { steps: 0, wetCells: 0, maxDepth: 0, simMs: 0 }
+        return true
+      },
+      /** 璇诲彇鍩熷钩闈㈠潗鏍?(x, z) 鐨勬按娣憋紙绫筹級锛涗粎璋冭瘯/E2E 浣跨敤銆?*/
+      getWaterDepthAt: (x: number, z: number) => this.sim?.debugDepthAt(x, z) ?? null,
       getDomainCacheInfo: () => getCachedDomainInfo(),
       clearDomainCache: () => {
         clearCachedDomainField()
         void clearServerDomainField()
         this.domainSource = null
-        this.panel.syncDomainMeta()
       },
       refreshDomain: () => this.rebuildFixedDomain(),
-      /** 丢弃当前内存中的模拟域，按“浏览器缓存 → 服务器缓存 → 重新采样”重新建立（测试/调试用）。 */
+      /** 涓㈠純褰撳墠鍐呭瓨涓殑妯℃嫙鍩燂紝鎸夆€滄祻瑙堝櫒缂撳瓨 鈫?鏈嶅姟鍣ㄧ紦瀛?鈫?閲嶆柊閲囨牱鈥濋噸鏂板缓绔嬶紙娴嬭瘯/璋冭瘯鐢級銆?*/
       restoreDomainFromStorage: async () => {
         this.disposeSimulation()
         this.field = null
         this.domain = null
         this.projection = null
         this.domainSource = null
-        this.dom.progress.hidden = true
         return this.ensureDomain()
       },
       getStats: () => (this.sim ? this.sim.debugStats() : null),
@@ -898,6 +910,17 @@ export class WaterEditor {
         }),
       enterWaterMode: () => this.enterMode('water'),
       enterSceneMode: () => this.enterMode('scene'),
+      isPlacing: () => this.placing,
+      isBuilding: () => Boolean(this.build),
+      getProgress: () => ({ ...this.buildProgress }),
+      togglePlacing: () => this.togglePlacing(),
+      cancelPlacing: () => this.exitPlacing(),
+      setEnabled: (enabled: boolean) => this.setEnabled(enabled),
+      resetSimulation: () => this.resetSimulation(),
+      rebuildSimulation: () => this.rebuildSimulation(),
+      rebuildDomain: () => {
+        void this.rebuildFixedDomain()
+      },
       placeSourceAt: (longitude: number, latitude: number, groundLevel?: number) => {
         this.placeSource(longitude, latitude, groundLevel)
       },
@@ -910,22 +933,27 @@ export class WaterEditor {
         Object.assign(source, patch)
         this.markers.setSources(this.state.sources, this.selectedId, this.projection)
         this.applySimState()
-        this.panel.syncSourceList()
-        this.panel.syncSourceEditor()
         this.scheduleSave()
         return true
       },
       setSimSettings: (patch: Partial<WaterState['sim']>) => {
         Object.assign(this.state.sim, patch)
-        this.panel.syncSimControls()
         this.applySimState()
         this.scheduleSave()
       },
       setVisual: (patch: Partial<WaterState['visual']>) => {
         Object.assign(this.state.visual, patch)
-        this.panel.syncAppearance()
         this.surface?.setVisual(this.state.visual)
         this.scheduleSave()
+      },
+      applyExternalState: (incoming: WaterState) => {
+        this.state = normalizeWaterState(incoming)
+        this.selectedId = null
+        this.markers.setSources(this.state.sources, null, this.projection)
+        this.surface?.setVisual(this.state.visual)
+        this.surface?.setEnabled(this.state.enabled)
+        this.applySimState()
+        this.syncAll()
       },
       rebuildAt: async () => {
         this.selectedId = null
@@ -935,7 +963,6 @@ export class WaterEditor {
         )
         return this.isDomainReady
       },
-      saveNow: () => this.saveNow(true),
       getCanvasSize: () => {
         const rect = this.canvas.getBoundingClientRect()
         return { width: rect.width, height: rect.height }

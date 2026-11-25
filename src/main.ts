@@ -1,18 +1,9 @@
 import tellux, { type ImageryLayerOptions, type TerrainOptions, type Viewer } from 'tellux'
-import { domId } from './shared/domIds'
 import { WaterEditor } from './water/waterEditor'
-import { initUiShell } from './ui/shell'
-import { CLOUD_SCENE_DEFAULTS, initCloudControls } from './ui/cloudControls'
+import { CLOUD_SCENE_DEFAULTS } from './ui/cloudDefaults'
+import { startMuiUi } from './ui/mui/mount'
 import { assetPath, STATIC_HOST } from './shared/assets'
-import { requireElement } from './shared/dom'
-import {
-  DEFAULT_TIME_MINUTES,
-  formatAltitude,
-  formatClockTime,
-  formatCoordinate,
-  minutesToSceneDate
-} from './shared/format'
-import './style.css'
+import { DEFAULT_TIME_MINUTES, minutesToSceneDate } from './shared/format'
 
 const INITIAL_VIEW = {
   longitude: 116.77,
@@ -32,48 +23,16 @@ const USE_CESIUM_ION = STATIC_HOST && ION_TOKEN.length > 0
 const CESIUM_TERRAIN_ASSET_ID = 1
 const CESIUM_IMAGERY_ASSET_ID = 2
 
-const loader = requireElement(domId('loader'))
-const loaderDetail = requireElement(domId('loader-detail'))
-const loaderBar = requireElement<HTMLElement>(domId('loader-bar'))
-const toast = requireElement(domId('toast'))
+const ui = startMuiUi()
 
-function setLoader(progress: number, detail: string): void {
-  loaderDetail.textContent = detail
-  loaderBar.style.width = `${Math.max(6, Math.min(100, progress))}%`
-  loaderBar.style.animation = 'none'
-  loaderBar.style.transform = 'none'
-  loaderBar.style.background =
-    'linear-gradient(90deg, rgba(127,227,255,0.2), #7fe3ff, rgba(127,227,255,0.2))'
-}
-
-function hideLoader(delay = 300): void {
-  window.setTimeout(() => loader.classList.add('is-hidden'), delay)
-}
-
-function showError(message: string): void {
-  loader.classList.remove('is-hidden')
-  loaderDetail.textContent = message
-  loader.classList.add('is-error')
-  const title = loader.querySelector('strong')
-  if (title) title.textContent = '三维地球加载失败'
-  loaderBar.style.width = '100%'
-  // 清掉 setLoader 写的内联背景，让 .loader.is-error 的样式生效。
-  loaderBar.style.background = ''
-}
-
-let toastTimer = 0
 function showToast(message: string, duration = 2600): void {
-  toast.textContent = message
-  toast.classList.add('is-visible')
-  window.clearTimeout(toastTimer)
-  toastTimer = window.setTimeout(() => toast.classList.remove('is-visible'), duration)
+  window.dispatchEvent(new CustomEvent('water-toast', { detail: { message, duration } }))
 }
 
 /**
  * 运行期兜底：未捕获错误与未处理的 Promise 拒绝。
  *
- * 视口就绪前把原因写进加载层，就绪后改用 toast，
- * 避免一次偶发错误把已经渲染好的场景替换成错误页。
+ * 视口就绪前把原因写进启动页，就绪后改用 toast。
  */
 let viewerReady = false
 
@@ -83,7 +42,7 @@ function reportRuntimeError(reason: unknown): void {
     showToast(`运行出错：${message}`, 4200)
     return
   }
-  showError(message)
+  ui.error(message)
 }
 
 window.addEventListener('error', (event) => {
@@ -150,12 +109,14 @@ function mountWaterEditor(viewer: Viewer): void {
 }
 
 async function boot(): Promise<void> {
-  setLoader(14, '读取地形缓存配置…')
-  setLoader(38, '连接地形与影像服务…')
+  ui.progress(14, '读取地形缓存配置…')
+  ui.progress(38, '连接地形与影像服务…')
 
   let viewer: Viewer
   try {
-    viewer = new tellux.Viewer(requireElement<HTMLElement>(domId('viewer')), {
+    const container = document.getElementById('viewer')
+    if (!container) throw new Error('缺少 #viewer')
+    viewer = new tellux.Viewer(container, {
       dracoDecoderPath: assetPath('draco/'),
       clock: {
         currentTime: minutesToSceneDate(DEFAULT_TIME_MINUTES),
@@ -213,7 +174,7 @@ async function boot(): Promise<void> {
     })
   } catch (error) {
     console.error(error)
-    showError(error instanceof Error ? error.message : '无法创建 WebGL 渲染器')
+    ui.error(error instanceof Error ? error.message : '无法创建 WebGL 渲染器')
     return
   }
 
@@ -224,34 +185,11 @@ async function boot(): Promise<void> {
   viewer.terrain.set(createTerrainOptions())
 
   mountWaterEditor(viewer)
-  initUiShell()
   viewerReady = true
 
-  const clockValue = requireElement('#clock-status span')
-  initCloudControls({
-    viewer,
-    showToast,
-    onTimeChange: (minutes) => {
-      clockValue.textContent = formatClockTime(minutes)
-    }
-  })
-
-  setLoader(100, '就绪')
-  hideLoader(260)
-
-  // 底部相机读数：低频刷新，避免每帧写 DOM。
-  const coordLon = requireElement(domId('coord-lon'))
-  const coordLat = requireElement(domId('coord-lat'))
-  const coordAlt = requireElement(domId('coord-alt'))
-  const readoutTimer = window.setInterval(() => {
-    const { destination } = viewer.camera.getState()
-    coordLon.textContent = formatCoordinate(destination.longitude, 'E', 'W')
-    coordLat.textContent = formatCoordinate(destination.latitude, 'N', 'S')
-    coordAlt.textContent = formatAltitude(destination.height)
-  }, 450)
+  if (waterEditor) ui.ready(viewer, waterEditor)
 
   window.addEventListener('beforeunload', () => {
-    window.clearInterval(readoutTimer)
     waterEditor?.dispose()
     viewer.destroy()
   })
@@ -259,5 +197,5 @@ async function boot(): Promise<void> {
 
 boot().catch((error) => {
   console.error(error)
-  showError(error instanceof Error ? error.message : '未知错误')
+  ui.error(error instanceof Error ? error.message : '未知错误')
 })

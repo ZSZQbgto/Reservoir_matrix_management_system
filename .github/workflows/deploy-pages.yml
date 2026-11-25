@@ -34,14 +34,16 @@ jobs:
       - name: Type check and tests
         run: npm run check
 
+      - name: Check Cesium Ion token
+        run: test -n "${{ secrets.CESIUM_ION_TOKEN }}"
+
       - name: Build static site
         env:
           # 项目站点默认 /<仓库名>/；用户/组织站点或自定义域名可通过 PAGES_BASE_PATH=/ 覆盖。
           BASE_PATH: ${{ vars.PAGES_BASE_PATH || (endsWith(github.repository, '.github.io') && '/' || format('/{0}/', github.event.repository.name)) }}
           VITE_STATIC_HOST: '1'
-          # 静态页面在浏览器里直接连接 Cesium Ion；token 会进入前端产物。
-          # 用户已确认 token 泄露可接受；也可以改为 secret 覆盖。
-          VITE_CESIUM_ION_TOKEN: ${{ secrets.CESIUM_ION_TOKEN || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJub25jZSI6IlFsN2I5MXMzOVNRRzFBdjYiLCJqdGkiOiI5NzBmMTIzZC03ZDllLTQwZjYtOGM5Mi0yODg1ODBlZWQzOTIiLCJpZCI6NTIwMDY4LCJpc3MiOiJodHRwczovL2FwaS5jZXNpdW0uY29tIiwiYXVkIjoidW5kZWZpbmVkX2RlZmF1bHQiLCJpYXQiOjE3OTE2ODg1MDZ9.RjsXfh_XSK_ymZo02AXsXCLrG7JcZvqDn1MiGXajbR8' }}
+          # 静态页面由浏览器直连 Cesium Ion；不要在 workflow 中写死 token。
+          VITE_CESIUM_ION_TOKEN: ${{ secrets.CESIUM_ION_TOKEN }}
         run: npm run build:pages
 
       - name: Upload Pages artifact
